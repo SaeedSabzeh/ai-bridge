@@ -290,6 +290,8 @@ def cli_reply(peer, question, context, base, config):
             raise BridgeError("Update Codex CLI: this bridge requires --ignore-user-config to keep automatic reviews separate from your configured integrations.", 503)
         args = ["--ask-for-approval", "never",
                 "-c", "features.shell_tool=false", "-c", "features.multi_agent=false",
+                "-c", "features.multi_agent_v2=false", "-c", "features.apps=false",
+                "-c", "features.hooks=false",
                 "exec", "--ignore-user-config", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--json", "-"]
     rc, out, err = run_process(command + args, workdir, config["timeout_seconds"], prompt)
     if rc:
@@ -332,6 +334,7 @@ def launch_worker(base, job_id):
         process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--data-dir", str(base), "worker", job_id],
                                    stdout=log, stderr=log, **kwargs)
     threading.Thread(target=process.wait, daemon=True).start()
+    return process
 
 
 class Mailbox:
@@ -379,7 +382,7 @@ class Mailbox:
         items = [item for item in items if recipient is None or item["recipient"] == recipient]
         return sorted(items, key=lambda item: item["created_at"], reverse=True)[:limit]
 
-    def submit(self, data):
+    def submit(self, data, *, owner_run=None):
         if not isinstance(data, dict):
             raise BridgeError("Expected a JSON object.")
         sender, recipient = data.get("sender"), data.get("recipient")
@@ -399,12 +402,16 @@ class Mailbox:
         if not isinstance(task_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
             raise BridgeError("Task ID must contain 1 to 64 letters, digits, underscores, or hyphens.")
         content = dict(sender=sender, recipient=recipient, question=question.strip(), context=context, mode=mode, task_id=task_id)
+        if owner_run is not None:
+            if not ID_RE.fullmatch(owner_run) or mode != "auto":
+                raise BridgeError("Invalid desktop lead request.")
+            content["owner_run"] = owner_run
         with self.lock:
             if self.closed:
                 raise BridgeError("Bridge is shutting down.", 503)
             if path.exists():
                 existing = read_json(path)
-                if any(existing[key] != value for key, value in content.items()):
+                if any(existing.get(key) != value for key, value in content.items()):
                     raise BridgeError("This request ID was already used for different content.", 409)
                 return existing
             active = sum(item["status"] not in TERMINAL for item in self.listing(limit=None))
@@ -422,6 +429,16 @@ class Mailbox:
                     item.update(status="failed", error="Could not launch reviewer: " + str(exc), updated_at=now())
                     atomic_json(path, item)
         return item
+
+    def abandon_lead_reviews(self, run_id):
+        """Resolve unfinished advisers killed with their containing desktop job."""
+        with self.lock:
+            for path in (self.base / "data/requests").glob("*.json"):
+                item = read_json(path)
+                if item.get("owner_run") == run_id and item["status"] not in TERMINAL:
+                    item.update(status="failed", error="The lead turn ended before this review returned. It was not replayed.",
+                                updated_at=now())
+                    atomic_json(path, item)
 
     def work(self, job_id):
         recipient = self.get(job_id)["recipient"]
@@ -957,6 +974,17 @@ If the CLI is unavailable or the subscription limit is reached, report that fact
 - Create a new output folder for every experiment. Record config, seed, split, code commit, environment, and actual metrics. Distinguish validation and leaderboard results. Never overwrite an earlier run.
 - Write separate result JSON files per experiment and rebuild summaries from them. Do not concurrently append to a shared CSV or edit the same notebook. Keep reusable training code in Python modules.
 - Coordinate GPU use. Compare runs on the same recorded validation split. A peer's prediction of improvement is not a measured improvement.
+
+## Desktop task takeover
+
+When Saeed asks you to take over a desktop task, use `python lead_run.py list` and
+`python lead_run.py status TASK_ID` from this bridge folder to identify the task
+and inspect the checkpoint. Use `python lead_run.py switch TASK_ID --to YOUR_NAME --resume`
+to transfer ownership and start the incoming turn. Add `--stop-current` only if
+Saeed asks you to interrupt ongoing work. Continue from disk by default; use
+`--allow-outgoing-review` only when a follow-up is useful and the other provider
+is available. While an app-managed lead owns the workspace, use the app to
+continue it; do not start a second session that edits the same working tree.
 '''
     for filename, content in (("README.md", guide(base)), ("AGENTS.md", instructions), ("CLAUDE.md", instructions)):
         path = base / filename

@@ -5,13 +5,15 @@ Build a local Windows workspace where Claude Code and Codex can lead a task in e
 ## Verified so far
 
 - The original mailbox transcript was preserved byte for byte. The prototype's CLI and MCP remain available; the desktop app uses a separate state directory and can display the old mailbox.
-- Both user-level MCP connectors are registered. Claude Code 2.1.319 was installed project-locally. Codex passed a real subscription reply and a follow-up that recovered the prior answer.
+- Both user-level MCP connectors are registered. Claude Code 2.1.319 was installed project-locally. Both providers passed live subscription calls. Codex also recalled the prior answer in a follow-up.
 - A real Codex lead created a file, ran the approved verification command (exit code 0), and marked the task completed after recording the result.
 - A real Codex turn took over from a fixture checkpoint owned by Claude, ran the pending check once, and left the completed file untouched. Offline tests cover both transfer directions, unavailable-provider handling, and Windows process recovery. The fixture did not call Claude.
+- The full live test used both assistants on one project. Codex acted on Claude's reply and passed the first local check. Claude took over from that checkpoint, preserved the original file's timestamp, acted on Codex's reply, and passed the final local check. Each stage ran its check once. Both adviser transcripts were answered.
+- Claude reviewed the handoff design through the bridge. Its concern about interrupted publication led to staging the Markdown before committing ownership and publishing it afterward. Crash tests verify both sides of the JSON commit, rejection of stale writes, and idempotent recovery.
 - No Kaggle project or dataset has been supplied. There are no validation or leaderboard scores for a competition.
 
-## Remaining live verification
+## Next project
 
-Claude Code needs subscription sign-in. Saeed also reported hitting his five-hour limit. Once Claude is signed in and the limit has reset, run a small Claude advisory request and use its review of the takeover design. Then verify a real Claude lead turn and a live takeover with Claude as the incoming lead. Do not use API keys, enable extra usage, or repeatedly probe an exhausted provider.
+Use a small actual project before committing to a long competition run. Record the workspace, the objective and constraints, the validation split, and the approved commands. No installer or shared concurrent editing mode is needed for the current single-lead workflow.
 
 See [README.md](README.md) for launch, recovery, and experiment instructions and [APP-REQUIREMENTS.md](APP-REQUIREMENTS.md) for acceptance scenarios.

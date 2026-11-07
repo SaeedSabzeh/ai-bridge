@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ai_bridge import (BASE, BridgeError, Mailbox, atomic_json, auth_status,
                        config_for, executable_for)
-from lead_run import launch, recover, tail
+from lead_run import launch, lead_timeout, recover, tail
 from workspace_state import FIELDS, Store
 
 NAMES = {"claude": "Claude Code", "chatgpt": "ChatGPT / Codex"}
@@ -462,7 +462,7 @@ class App(tk.Tk):
                    "Checkpoint saved.")
 
     def open_checkpoint(self):
-        os.startfile(self.store.mirror_path(self.project(), self.task()))
+        os.startfile(self.store.repair_checkpoint(self.task()["id"]))
 
     def open_workspace(self):
         os.startfile(self.project()["path"])
@@ -522,7 +522,7 @@ class App(tk.Tk):
         row.pack(fill="x")
         self.connection_text = self.reader(popup)
         for label, cmd in [
-            ("Refresh", self.connections), ("Set CLI paths", self.edit_paths),
+            ("Refresh", self.connections), ("CLI settings", self.edit_paths),
             ("Clear Claude limit", lambda: self.clear_limit("claude")),
             ("Clear Codex limit", lambda: self.clear_limit("chatgpt")),
         ]:
@@ -570,12 +570,17 @@ class App(tk.Tk):
         config = config_for(self.store.base)
         def save(v):
             latest = config_for(self.store.base)
-            latest.update({k: value.strip() or None for k, value in v.items()})
+            latest.update({k: v[k].strip() or None for k in ("claude_path", "codex_path")})
+            latest["lead_timeout_seconds"] = int(v["lead_timeout_seconds"])
+            lead_timeout(latest)
             atomic_json(self.store.base / "bridge-config.json", latest)
             self.connections()
-        Form(self, "CLI paths", [(k, label, "entry", config.get(k) or "") for k, label in
-                                 [("claude_path", "Claude Code executable"), ("codex_path", "Codex executable")]],
-             save, "Leave blank for automatic detection.")
+        Form(self, "CLI settings",
+             [("claude_path", "Claude Code executable", "entry", config.get("claude_path") or ""),
+              ("codex_path", "Codex executable", "entry", config.get("codex_path") or ""),
+              ("lead_timeout_seconds", "Lead turn limit in seconds", "entry",
+               str(config.get("lead_timeout_seconds", config["timeout_seconds"])))],
+             save, "Leave executable paths blank for automatic detection. Raise the turn limit for longer checks.")
 
     def clear_limit(self, peer):
         self.store.clear_limit(peer)

@@ -14,7 +14,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ai_bridge import BridgeError, Mailbox, config_for, now
-from lead_run import build_prompt, recover, worker
+from lead_run import build_prompt, controls, recover, worker
 from lead_tools import Scope
 from windows_job import Job
 from workspace_state import Store
@@ -99,7 +99,9 @@ class DesktopTest(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "requires native Windows jobs")
     def test_recovery_does_not_replay_and_kills_leftover_job(self):
         run = self.store.start(self.task)
-        self.claim(run)
+        _, _, scope = self.claim(run)
+        with patch("ai_bridge.launch_worker"):
+            request = scope.call("ask_peer", {"question": "This queued review belongs to the interrupted run."})
         self.store.control(self.task, "switch", incoming="chatgpt", resume=True)
         child = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
         self.addCleanup(child.stdin.close)
@@ -113,21 +115,27 @@ class DesktopTest(unittest.TestCase):
         self.assertEqual(self.snapshot()["lead"], "chatgpt")
         self.assertIsNone(self.store.claim(self.task, run))
         self.assertIn("no request was replayed", self.snapshot()["checkpoint"]["blockers"])
+        box = Mailbox(self.store.base, config_for(self.store.base), external_workers=True)
+        self.assertEqual(box.get(request["id"])["status"], "failed")
+        self.assertIn("not replayed", box.get(request["id"])["error"])
 
     def test_recovery_refuses_while_another_process_holds_writer_lease(self):
         run = self.store.start(self.task)
-        code = ("import sys; from ai_bridge import FileLock; "
-                "l=FileLock(sys.argv[1]); l.__enter__(); print('locked',flush=True); sys.stdin.read(); l.__exit__()")
-        with subprocess.Popen([sys.executable, "-c", code, str(self.store.home / "execution.lock")],
+        code = ("import sys; from contextlib import ExitStack; from ai_bridge import FileLock; "
+                "s=ExitStack(); [s.enter_context(FileLock(p)) for p in sys.argv[1:]]; "
+                "print('locked',flush=True); sys.stdin.read(); s.close()")
+        with subprocess.Popen([sys.executable, "-c", code, str(self.store.home / "execution.lock"),
+                               str(self.store.lock.path)],
                               stdout=subprocess.PIPE, stdin=subprocess.PIPE) as p:
             try:
                 self.assertEqual(p.stdout.readline().strip(), b"locked")
                 with self.assertRaises(BridgeError):
                     recover(Store(self.store.base), self.task)
-                self.assertEqual(self.snapshot()["active"]["id"], run)
+                self.assertIsNone(controls(self.store, self.task, run, wait=False))
             finally:
                 p.stdin.close()
                 p.wait(timeout=10)
+        self.assertEqual(self.snapshot()["active"]["id"], run)
 
     def test_file_revision_workspace_boundaries_and_failed_checkpoint(self):
         first = self.snapshot()
@@ -141,11 +149,55 @@ class DesktopTest(unittest.TestCase):
         scope.call("write_file", {"path": "notes.txt", "text": "keep", "expected": "new"})
         with self.assertRaises(BridgeError):
             scope.call("write_file", {"path": "notes.txt", "text": "stale", "expected": "new"})
-        with patch("workspace_state.atomic_text", side_effect=OSError("disk unavailable")):
+        with patch("workspace_state.stage_text", side_effect=OSError("disk unavailable")):
             with self.assertRaises(OSError):
                 self.store.finish(self.task, self.snapshot()["active"]["id"], "paused")
         self.assertIsNotNone(self.snapshot()["active"])
         self.assertEqual((self.root / "notes.txt").read_text(), "keep")
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows jobs")
+    def test_abrupt_exit_at_both_checkpoint_publication_boundaries(self):
+        code = """
+import os, sys
+from pathlib import Path
+from workspace_state import Store
+store = Store(sys.argv[1])
+task, run, boundary = sys.argv[2:]
+real_replace = os.replace
+def stop_at_boundary(src, dst):
+    if ((boundary == 'before-json' and Path(dst) == store.path)
+            or (boundary == 'after-json' and Path(dst).suffix == '.md')):
+        os._exit(73)
+    return real_replace(src, dst)
+with store.execution:
+    os.replace = stop_at_boundary
+    store.finish(task, run, 'paused')
+"""
+        for boundary in ("before-json", "after-json"):
+            with self.subTest(boundary=boundary):
+                task_id = self.store.add_task(self.project, boundary, "claude")
+                run = self.store.start(task_id)
+                self.assertTrue(self.store.claim(task_id, run))
+                self.store.control(task_id, "switch", incoming="chatgpt", resume=True)
+                child = subprocess.run([sys.executable, "-c", code, str(self.store.base), task_id, run, boundary],
+                                       capture_output=True, timeout=30)
+                self.assertEqual(child.returncode, 73, child.stderr.decode(errors="replace"))
+                state = self.store.read()
+                task = self.store.task(state, task_id)
+                mirror = self.store.mirror_path(self.store.project(state, self.project), task)
+                self.assertIn("Lead: claude", mirror.read_text(encoding="utf-8"))
+                self.assertEqual(task["lead"], "claude" if boundary == "before-json" else "chatgpt")
+                recovered = Store(self.store.base)
+                recover(recovered, task_id)
+                task = recovered.task(recovered.read(), task_id)
+                self.assertEqual((task["lead"], task["generation"], task["active"]), ("chatgpt", 2, None))
+                self.assertIn("Lead: chatgpt", mirror.read_text(encoding="utf-8"))
+                self.assertIsNone(recovered.claim(task_id, run))
+                with self.assertRaises(BridgeError):
+                    Scope(recovered, task_id, run, 1).call("write_file", {
+                        "path": "stale.txt", "text": "must not be written", "expected": "new"})
+                recover(recovered, task_id)
+                self.assertEqual(recovered.task(recovered.read(), task_id), task)
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows jobs")
     def test_approved_experiment_records_measured_result_and_kills_detached_child(self):

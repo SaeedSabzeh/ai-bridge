@@ -144,7 +144,7 @@ class Scope:
                             raise BridgeError("This adviser is unavailable for this turn. Continue using the checkpoint.")
                         return box.submit({"sender": task["lead"], "recipient": peer,
                                            "question": args["question"], "context": args.get("context", ""),
-                                           "task_id": task["id"]})
+                                           "task_id": task["id"]}, owner_run=self.run_id)
                     item = box.get(args["request_id"])
                     if item.get("task_id") != task["id"]:
                         raise BridgeError("That request belongs to another task.")

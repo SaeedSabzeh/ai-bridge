@@ -33,8 +33,9 @@ observed results. **Mailbox history** includes existing CLI/MCP transcripts.
 `data/desktop/workspace.json`; `data/requests/` remains the original mailbox.
 The app writes an `AI-BRIDGE-CHECKPOINT-<task-id>.md` snapshot in each project.
 Edit the checkpoint through the app (or CLI), because the Markdown is a view of
-the saved state. Back up the bridge's `data` directory locally along with your
-project files if you want to retain the full history.
+the saved state. **Open checkpoint** repairs the Markdown from the saved state
+if a process quit before the file could be updated. Back up the bridge's
+`data` directory locally along with your project files to retain the full history.
 
 ### Commands and experiments
 
@@ -52,6 +53,8 @@ code the lead edited. The app contains child processes for stop and takeover;
 it does not turn arbitrary scripts into sandboxed code. Avoid commands that
 submit jobs to services outside the local process tree. Pause any external
 writers separately before using the desktop lead.
+For longer local commands, raise the **Lead turn limit** under
+**Connections → CLI settings** before starting the turn.
 
 Each command gets its own `runs/bridge-<id>/` directory through the
 `AI_BRIDGE_RUN_DIR` environment variable. Write artifacts there and optionally
@@ -91,6 +94,9 @@ python ai_bridge.py doctor
 
 `python tests/live_codex_smoke.py` is an opt-in subscription test that uses a
 disposable project under `verification/`. It does not run in the offline suite.
+Add `--takeover` to resume from a fixture checkpoint. With both subscriptions
+signed in, `python tests/live_collaboration_smoke.py` exercises a live handoff
+and one review in each direction. These checks make real subscription calls.
 
 ## Original bridge CLI and optional dashboard
 

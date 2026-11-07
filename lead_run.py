@@ -20,6 +20,13 @@ SCRIPT = Path(__file__).resolve()
 HIDDEN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+def lead_timeout(config):
+    seconds = config.get("lead_timeout_seconds", config["timeout_seconds"])
+    if type(seconds) is not int or not 10 <= seconds <= 86400:
+        raise BridgeError("Lead turn limit must be between 10 and 86,400 seconds.")
+    return seconds
+
+
 def python_exe():
     path = Path(sys.executable)
     console = path.with_name("python.exe")
@@ -35,7 +42,7 @@ def launch(store, task_id, run_id):
                              creationflags=HIDDEN | getattr(subprocess, "DETACHED_PROCESS", 0))
 
 
-def provider_commands(store, task, workdir, command):
+def provider_commands(store, task, workdir, command, timeout=180):
     active = task["active"]
     mcp = [str(SCRIPT), "--base", str(store.base), "_mcp", task["id"], active["id"],
            str(task["generation"])]
@@ -49,10 +56,12 @@ def provider_commands(store, task, workdir, command):
     _, help_text, _ = run_process(command + ["exec", "--help"], workdir, 15)
     if "--ignore-user-config" not in help_text or "--ignore-rules" not in help_text:
         raise BridgeError("This Codex build cannot isolate its user config and rules. Update Codex CLI.")
-    overrides = ["features.shell_tool=false", "features.multi_agent=false", "web_search=disabled",
+    overrides = ["features.shell_tool=false", "features.multi_agent=false",
+                 "features.multi_agent_v2=false", "features.apps=false", "features.hooks=false",
+                 "web_search=disabled",
                  "mcp_servers.bridge.command=" + json.dumps(python_exe()),
                  "mcp_servers.bridge.args=" + json.dumps(mcp),
-                 "mcp_servers.bridge.required=true", "mcp_servers.bridge.tool_timeout_sec=600"]
+                 "mcp_servers.bridge.required=true", f"mcp_servers.bridge.tool_timeout_sec={max(600, timeout)}"]
     # Start/Resume authorizes only this app-owned server's known tools. The
     # server rechecks task ownership and confines writes and command presets.
     overrides += [f'mcp_servers.bridge.tools.{s["name"]}.approval_mode="approve"' for s in specs()]
@@ -97,8 +106,16 @@ def build_prompt(store, state, task):
     )
 
 
-def controls(store, task_id, run_id):
-    task = store.task(store.read(), task_id)
+def controls(store, task_id, run_id, *, wait=True):
+    try:
+        with store.lock if wait else FileLock(store.lock.path, timeout=0):
+            task = store.task(store.read_unlocked(), task_id)
+    except BridgeError as exc:
+        if not wait and exc.status == 409:
+            # A checkpoint or experiment can hold the lock. A busy read does
+            # not imply that the lease was revoked or the provider failed.
+            return None
+        raise
     active = task["active"]
     if not active or active["id"] != run_id:
         return "stop"
@@ -149,6 +166,7 @@ def run_lead(store, state, task):
     run_dir = store.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     config = config_for(store.base)
+    timeout = lead_timeout(config)
     lock = FileLock(store.base / "data" / (peer + ".lock"), timeout=0)
     wait_until = time.monotonic() + config["timeout_seconds"] + 30
     with contextlib.ExitStack() as stack:
@@ -164,7 +182,7 @@ def run_lead(store, state, task):
                 time.sleep(.2)
         command = executable_for(peer, store.base, config)
         auth_status(peer, command, run_dir)
-        args = provider_commands(store, task, run_dir, command)
+        args = provider_commands(store, task, run_dir, command, timeout)
         if controls(store, task_id, run_id):
             return "paused", "Paused before starting the provider."
         prompt = run_dir / "prompt.txt"
@@ -172,6 +190,10 @@ def run_lead(store, state, task):
         out_path, err_path = run_dir / "provider.jsonl", run_dir / "stderr.log"
         with Job(run_id) as job, out_path.open("xb") as out, err_path.open("xb") as err:
             env = clean_env()
+            if peer == "claude" and timeout > 600:
+                env.update(MCP_TOOL_TIMEOUT=str(timeout * 1000),
+                           CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=str(timeout * 1000),
+                           CLAUDE_AUTO_BACKGROUND_TASKS="0")
             # The scoped MCP endpoint is allowed to ask advisers; legacy MCP still
             # rejects recursion if the provider accesses it outside this workflow.
             process = subprocess.Popen([python_exe(), str(SCRIPT), "_gate"], cwd=run_dir,
@@ -182,9 +204,9 @@ def run_lead(store, state, task):
                 job.assign(process.pid)
                 process.stdin.write((json.dumps({"args": args, "prompt": str(prompt)}) + "\n").encode("ascii"))
                 process.stdin.close()
-                until = time.monotonic() + config["timeout_seconds"]
+                until = time.monotonic() + timeout
                 while process.poll() is None:
-                    if controls(store, task_id, run_id) == "stop":
+                    if controls(store, task_id, run_id, wait=False) == "stop":
                         break
                     if time.monotonic() > until:
                         timed_out = True
@@ -229,6 +251,7 @@ def worker(store, task_id, run_id):
         # the durable reservation. Unverifiable cleanup leaves the task fenced.
         with Job(run_id, existing=True) as job:
             job.empty()
+        Mailbox(store.base, {}, external_workers=True).abandon_lead_reviews(run_id)
         following = store.finish(task_id, run_id, outcome, detail)
     launch(store, task_id, following)
 
@@ -237,10 +260,12 @@ def recover(store, task_id):
     with store.execution:
         task = store.task(store.read(), task_id)
         if not task["active"]:
+            store.repair_checkpoint(task_id)
             return
         run_id = task["active"]["id"]
         with Job(run_id, existing=True) as job:
             job.empty()
+        Mailbox(store.base, {}, external_workers=True).abandon_lead_reviews(run_id)
         # No replay, including a pending "switch and continue". The user can
         # start a new turn after inspecting the recovered checkpoint.
         with store.lock:

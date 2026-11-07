@@ -38,20 +38,31 @@ def git_state(root):
         result = subprocess.run(
             [git, "--no-optional-locks", "-c", "core.fsmonitor=false",
              "-c", "core.quotePath=false", "-C", str(root), *args],
-            capture_output=True, timeout=8, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            capture_output=True, timeout=4, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         return result.stdout.decode("utf-8", "replace").strip() if not result.returncode else None
 
     try:
-        if run("rev-parse", "--is-inside-work-tree") != "true":
+        worktree = run("rev-parse", "--show-toplevel")
+        if not worktree:
             return {"status": "Workspace is outside a Git working tree."}
-        changes = run("status", "--porcelain=v1", "--untracked-files=normal", "--", ".",
-                      ":(exclude)AI-BRIDGE-CHECKPOINT-*.md")
-        return {"worktree": run("rev-parse", "--show-toplevel"),
-                "branch": run("rev-parse", "--abbrev-ref", "HEAD"),
-                "commit": run("rev-parse", "HEAD"),
-                "changes": (changes[:8000] + ("\n[truncated]" if len(changes) > 8000 else ""))
-                if changes is not None else "Git status unavailable."}
+        output = run("status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--", ".",
+                     ":(exclude)AI-BRIDGE-CHECKPOINT-*.md", ":(exclude).AI-BRIDGE-CHECKPOINT-*.tmp")
+        if output is None:
+            return {"worktree": worktree, "status": "Git status unavailable."}
+        result, lines = {"worktree": worktree}, []
+        for line in output.splitlines():
+            if line.startswith("# branch.oid "):
+                result["commit"] = line.removeprefix("# branch.oid ")
+            elif line.startswith("# branch.head "):
+                result["branch"] = line.removeprefix("# branch.head ")
+            elif line and not line.startswith("#"):
+                prefix = {"1": 8, "2": 9, "u": 10}.get(line[0])
+                parts = line.split(" ", prefix) if prefix else []
+                lines.append(parts[1] + " " + parts[-1] if len(parts) > 2 else line)
+        changes = "\n".join(lines)
+        result["changes"] = changes[:8000] + ("\n[truncated]" if len(changes) > 8000 else "")
+        return result
     except (OSError, subprocess.TimeoutExpired):
         return {"status": "Git inspection failed or timed out."}
 
@@ -68,8 +79,11 @@ class Store:
 
     def read(self):
         with self.lock:
-            return read_json(self.path) if self.path.exists() else {
-                "version": 1, "projects": {}, "tasks": {}, "limited": {}}
+            return self.read_unlocked()
+
+    def read_unlocked(self):
+        return read_json(self.path) if self.path.exists() else {
+            "version": 1, "projects": {}, "tasks": {}, "limited": {}}
 
     def save(self, state):
         atomic_json(self.path, state)
@@ -168,10 +182,27 @@ class Store:
             task["files"]["lead edits"] = "\n" + "\n".join(
                 f"{path} [{sha[:12]}]" for path, sha in list(edits.items())[-30:])
         path = self.mirror_path(project, task)
-        # Publish the projection first. If the workspace is unavailable, a handoff
-        # must not commit; if state publication fails, JSON still owns the lease.
-        atomic_text(path, self.markdown(project, task))
-        self.save(state)
+        # Stage and fsync the snapshot before committing ownership. A crash can
+        # leave an older projection, never a projection that claims a generation
+        # that hasn't committed. The caller only launches after both steps return.
+        staged = stage_text(path, self.markdown(project, task))
+        try:
+            self.save(state)
+            os.replace(staged, path)
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def repair_checkpoint(self, task_id):
+        """Regenerate the human-readable projection without changing ownership."""
+        with self.lock:
+            state = self.read()
+            task = self.task(state, task_id)
+            project = self.project(state, task["project"])
+            path = self.mirror_path(project, task)
+            content = self.markdown(project, task)
+            if not path.exists() or path.read_text(encoding="utf-8") != content:
+                atomic_text(path, content)
+            return path
 
     def update(self, task_id, fields, *, scope=None, revision=None):
         if not isinstance(fields, dict) or not fields or set(fields) - FIELDS.keys() or any(
@@ -224,7 +255,9 @@ class Store:
             state = self.read()
             task = self.task(state, task_id)
             active = task["active"]
-            if not active or active["id"] != run_id or active["phase"] != "queued":
+            if not active or active["id"] != run_id or active["phase"] != "queued" or (
+                active["generation"] != task["generation"]
+            ):
                 return None
             if active["control"]:
                 return False
@@ -290,7 +323,7 @@ class Store:
             state = self.read()
             task = self.task(state, task_id)
             active = task["active"]
-            if not active or active["id"] != run_id:
+            if not active or active["id"] != run_id or active["generation"] != task["generation"]:
                 return None
             if outcome == "limit reached":
                 state["limited"][task["lead"]] = now()
@@ -326,7 +359,7 @@ class Store:
         return self.home / "runs" / require_id(run_id)
 
 
-def atomic_text(path, value):
+def stage_text(path, value):
     path = Path(path)
     temp = path.with_name("." + path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
@@ -334,6 +367,15 @@ def atomic_text(path, value):
             file.write(value)
             file.flush()
             os.fsync(file.fileno())
+        return temp
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+def atomic_text(path, value):
+    temp = stage_text(path, value)
+    try:
         os.replace(temp, path)
     finally:
         temp.unlink(missing_ok=True)

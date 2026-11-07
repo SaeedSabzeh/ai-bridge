@@ -222,8 +222,13 @@ class BridgeTest(unittest.TestCase):
     def test_real_async_worker_reports_missing_cli(self):
         self.config['codex_path'] = str(self.base / 'nonexistent-cli.exe')
         b.atomic_json(self.base / 'bridge-config.json', self.config)
-        with patch.object(b, 'launch_worker', REAL_LAUNCH_WORKER):
+        processes = []
+        def capture_worker(*args):
+            processes.append(REAL_LAUNCH_WORKER(*args))
+        with patch.object(b, 'launch_worker', capture_worker):
             item = self.wait(self.submit(sender='claude', recipient='chatgpt'))
+        for process in processes:
+            process.wait(timeout=10)
         self.assertEqual(item['status'], 'failed')
         self.assertIn('codex CLI was not found', item['error'])
 

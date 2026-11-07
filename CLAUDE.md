@@ -31,3 +31,14 @@ If the CLI is unavailable or the subscription limit is reached, report that fact
 - Create a new output folder for every experiment. Record config, seed, split, code commit, environment, and actual metrics. Distinguish validation and leaderboard results. Never overwrite an earlier run.
 - Write separate result JSON files per experiment and rebuild summaries from them. Do not concurrently append to a shared CSV or edit the same notebook. Keep reusable training code in Python modules.
 - Coordinate GPU use. Compare runs on the same recorded validation split. A peer's prediction of improvement is not a measured improvement.
+
+## Desktop task takeover
+
+When Saeed asks you to take over a desktop task, use `python lead_run.py list` and
+`python lead_run.py status TASK_ID` from this bridge folder to identify the task
+and inspect the checkpoint. Use `python lead_run.py switch TASK_ID --to YOUR_NAME --resume`
+to transfer ownership and start the incoming turn. Add `--stop-current` only if
+Saeed asks you to interrupt ongoing work. Continue from disk by default; use
+`--allow-outgoing-review` only when a follow-up is useful and the other provider
+is available. While an app-managed lead owns the workspace, use the app to
+continue it; do not start a second session that edits the same working tree.
