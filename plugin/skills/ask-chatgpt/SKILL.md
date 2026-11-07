@@ -33,3 +33,9 @@ Don't ask for trivial things, and never just to hand off thinking you could do y
 If the bridge tools are missing or ChatGPT's limit is reached, say so in one line and continue
 on your own. Fallback CLI (from the bridge folder):
 `python ai_bridge.py ask --from claude --to chatgpt --task TASK --question-file Q.txt --context-file C.txt --wait 45`
+
+## When ChatGPT asks Claude
+ChatGPT can send Claude a **manual** question; it waits in Claude's inbox (the panel and status line
+say "waiting in Claude's inbox"). When Saeed asks you to answer it, or it is clearly meant for this
+session's work, read it with `mcp__local-ai-bridge__check_inbox` and answer with
+`mcp__local-ai-bridge__reply_to_peer`, using what you actually know and have verified.

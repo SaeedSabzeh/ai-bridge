@@ -1,5 +1,6 @@
 export type Exchange = {
   id: string
+  mode: string
   from: string
   to: string
   task: string
