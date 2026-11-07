@@ -143,6 +143,14 @@ export const register: Register = on => {
     const issue = await read($, problem)
     const visible = list.slice(-count)
     const hidden = list.length - visible.length
+    // Round number of each exchange within its topic, so a back-and-forth reads as one conversation.
+    const rounds = new Map<string, number>()
+    const seen = new Map<string, number>()
+    for (const item of list) {
+      const n = (seen.get(item.task) ?? 0) + 1
+      seen.set(item.task, n)
+      rounds.set(item.id, n)
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -163,7 +171,10 @@ export const register: Register = on => {
           <Box key={item.id} flexDirection="column">
             <Text>
               <Text bold>{name(item.from)} → {name(item.to)}</Text>
-              <Text dimColor>  ·  {when(item.created)}{item.task ? `  ·  ${item.task}` : ''}</Text>
+              <Text dimColor>
+                {'  ·  '}{when(item.created)}{item.task ? `  ·  ${item.task}` : ''}
+                {item.task && (rounds.get(item.id) ?? 1) > 1 ? `  ·  round ${rounds.get(item.id)}` : ''}
+              </Text>
             </Text>
             <Markdown text={clip(item.question, 1500)} />
             {item.answer ? (

@@ -21,8 +21,9 @@ Don't ask for trivial things, and never just to hand off thinking you could do y
 2. Add only the minimum context needed (relevant code snippet, error, constraints).
    Never include credentials, tokens, `.env` contents, API keys or unrelated personal data.
 3. Call the MCP tool `mcp__local-ai-bridge__ask_peer` with `question`, `context`, and a short
-   `task_id` (letters, digits, `-`, `_`). Reuse the same `task_id` for follow-ups so ChatGPT
-   sees the recent exchange.
+   `task_id` (letters, digits, `-`, `_`). The bridge keeps one ChatGPT session per `task_id`, so
+   follow-ups with the same ID continue the same conversation and ChatGPT remembers it all.
+   For a real back-and-forth, use the discuss-with-chatgpt skill.
 4. If the reply is not ready, poll with `mcp__local-ai-bridge__read_reply` using the returned
    `request_id`. Never resubmit the same question just because waiting ended.
    The conversation also appears live in the **Claude ↔ ChatGPT** panel (`/chatgpt` opens it).
