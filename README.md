@@ -7,8 +7,13 @@ Double-click **Launch AI Bridge.cmd** in this folder, or run
 and runs in its own Windows window. It does not require the browser dashboard,
 a listener, or an installer. The assistant CLIs are still required for live turns.
 
-1. Open **Connections** to check the detected executables and subscription sign-in.
-   Refresh after signing in. The app does not estimate remaining quota.
+For a separate host that can run tasks while your PC is off, see the
+[private Google Cloud setup](cloud/README.md).
+
+1. Open **Connections**. If Claude and Codex both show **Ready**, there is no
+   extra connection step in the app. If one is signed out, use its **Sign in**
+   button and choose your subscription account. Use **Check connections** to
+   refresh. The app does not estimate remaining quota.
 2. Select **+ Project** to register an existing working folder, then **+ Task**
    to record the objective, constraints, and first lead. If work is already in
    progress, use **Edit checkpoint** to capture it before starting a turn.

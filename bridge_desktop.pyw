@@ -7,11 +7,12 @@ import json
 import os
 from pathlib import Path
 import queue
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from ai_bridge import (BASE, BridgeError, Mailbox, atomic_json, auth_status,
+from ai_bridge import (BASE, BridgeError, Mailbox, atomic_json, auth_status, clean_env,
                        config_for, executable_for)
 from lead_run import launch, lead_timeout, recover, tail
 from workspace_state import FIELDS, Store
@@ -90,6 +91,7 @@ class App(tk.Tk):
         self.results = queue.Queue()
         self.connection_busy = False
         self.connection_results = {}
+        self.login_processes = {}
         self.last_activity = None
         self.style()
         self.layout()
@@ -515,20 +517,54 @@ class App(tk.Tk):
         self.after(180, self.drain_results)
 
     def show_connections(self):
+        if getattr(self, "connection_window", None) and self.connection_window.winfo_exists():
+            self.connection_window.lift()
+            self.connections()
+            return
         popup = tk.Toplevel(self)
+        self.connection_window = popup
         popup.title("AI Bridge | Connections")
-        popup.geometry("745x390")
+        popup.geometry("790x440")
         row = ttk.Frame(popup, padding=10)
         row.pack(fill="x")
-        self.connection_text = self.reader(popup)
         for label, cmd in [
-            ("Refresh", self.connections), ("CLI settings", self.edit_paths),
+            ("Check connections", self.connections), ("Sign in to Claude", lambda: self.sign_in("claude")),
+            ("Sign in to Codex", lambda: self.sign_in("chatgpt")), ("CLI settings", self.edit_paths),
+        ]:
+            ttk.Button(row, text=label, command=lambda fn=cmd: self.guard(fn)).pack(side="left", padx=4)
+        options = ttk.Frame(popup, padding=(10, 0, 10, 8))
+        options.pack(fill="x")
+        for label, cmd in [
             ("Clear Claude limit", lambda: self.clear_limit("claude")),
             ("Clear Codex limit", lambda: self.clear_limit("chatgpt")),
         ]:
-            ttk.Button(row, text=label, command=lambda fn=cmd: self.guard(fn)).pack(side="left", padx=4)
-        self.update_connections_panel()
+            ttk.Button(options, text=label, command=lambda fn=cmd: self.guard(fn)).pack(side="left", padx=4)
+        self.connection_text = self.reader(popup)
         self.connections()
+        self.update_connections_panel()
+
+    def sign_in(self, peer):
+        if peer in self.login_processes:
+            raise BridgeError("A sign-in window for this assistant is already open.")
+        try:
+            command = executable_for(peer, self.store.base, config_for(self.store.base))
+        except BridgeError as exc:
+            raise BridgeError(f"{NAMES[peer]} isn't installed or detected. Install its CLI, "
+                              "or use CLI settings to point to an existing installation.") from exc
+        env = clean_env()
+        env.pop("AI_BRIDGE_WORKER", None)
+        args = ["auth", "login"] if peer == "claude" else ["login"]
+        self.login_processes[peer] = subprocess.Popen(command + args, cwd=self.store.base, env=env,
+                                                       creationflags=subprocess.CREATE_NEW_CONSOLE)
+        self.update_connections_panel()
+        self.after(500, lambda: self.watch_sign_in(peer))
+
+    def watch_sign_in(self, peer):
+        if self.login_processes[peer].poll() is None or self.connection_busy:
+            self.after(500, lambda: self.watch_sign_in(peer))
+        else:
+            del self.login_processes[peer]
+            self.connections()
 
     def show_mailbox(self):
         popup = tk.Toplevel(self)
@@ -555,15 +591,20 @@ class App(tk.Tk):
         if not hasattr(self, "connection_text") or not self.connection_text.winfo_exists():
             return
         limits = self.store.read()["limited"]
-        values = ["Subscription usage remaining: unavailable. Login status does not measure remaining quota."]
+        values = ["If both assistants show Ready, you can start a task. If one is signed out, "
+                  "use its Sign in button and choose your subscription account."]
         for peer, name in NAMES.items():
             ready, cmd, detail = self.connection_results.get(peer, (False, [], "Checking connection…"))
-            status = "Limit reached" if peer in limits else ("Ready" if ready else "Disconnected")
+            status = ("Signing in…" if peer in self.login_processes else
+                      "Limit reached" if peer in limits else
+                      "Ready" if ready else "Sign-in required" if cmd else
+                      "Checking…" if self.connection_busy else "CLI not found")
+            if not ready and not cmd and not self.connection_busy:
+                detail = "Install its CLI or select the existing executable under CLI settings."
             values.append(f"{name}  |  {status}\n"
                           + ("CLI: " + subprocess_display(cmd) + "\n" if cmd else "")
                           + detail + ("\nLast limit report: " + stamp(limits[peer]) if peer in limits else ""))
-        values.append("To sign in, run the detected Claude CLI with auth login, or Codex with login, "
-                      "in a normal terminal and choose your subscription account.")
+        values.append("Remaining subscription usage is unavailable.")
         self.show(self.connection_text, "\n\n".join(values))
 
     def edit_paths(self):

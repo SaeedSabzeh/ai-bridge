@@ -179,6 +179,31 @@ def clean_env():
     return env
 
 
+def desktop_codex_bins(home):
+    """The Windows desktop app installs versioned CLI binaries outside shell PATH."""
+    roots = [home / "AppData/Local"]
+    if os.environ.get("LOCALAPPDATA"):
+        roots.insert(0, Path(os.environ["LOCALAPPDATA"]))
+    seen = set()
+    for local in roots:
+        folder = local / "OpenAI/Codex/bin"
+        if folder in seen:
+            continue
+        seen.add(folder)
+        choices = []
+        try:
+            entries = [folder / "codex.exe", *folder.glob("*/codex.exe")]
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                if path.is_file():
+                    choices.append((path.stat().st_mtime_ns, path))
+            except OSError:
+                continue
+        yield from (path for _, path in sorted(choices, reverse=True))
+
+
 def executable_for(peer, base, config):
     name = "codex" if peer == "chatgpt" else "claude"
     configured = config.get(name + "_path") or os.environ.get("AI_BRIDGE_" + name.upper())
@@ -203,6 +228,8 @@ def executable_for(peer, base, config):
             home / ".local/bin" / (name + (".exe" if os.name == "nt" else "")),
             home / "AppData/Roaming/npm/node_modules" / package / script,
         ])
+        if os.name == "nt" and peer == "chatgpt":
+            candidates.extend(desktop_codex_bins(home))
     for path in candidates:
         if not path.is_file():
             continue

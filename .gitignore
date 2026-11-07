@@ -3,5 +3,6 @@ tools/
 bridge-config.json
 __pycache__/
 verification/
+cloud-output/
 AI-BRIDGE-CHECKPOINT-*.md
 .AI-BRIDGE-CHECKPOINT-*.tmp

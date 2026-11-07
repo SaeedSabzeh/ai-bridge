@@ -219,6 +219,22 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(all(result.returncode == 0 for result in results), [result.stderr for result in results])
         self.assertEqual(len(b.api(self.base, '/api/requests')['requests']), 6)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows desktop install layout')
+    def test_codex_desktop_discovery_without_path(self):
+        home = self.base / 'user'
+        install = home / 'AppData/Local/OpenAI/Codex/bin'
+        old, new = (install / version / 'codex.exe' for version in ('old', 'new'))
+        for executable in (old, new):
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(b'fixture')
+        os.utime(old, (1000, 1000))
+        os.utime(new, (2000, 2000))
+        with patch.dict(os.environ, {'USERPROFILE': str(home), 'LOCALAPPDATA': str(self.base / 'redirected'),
+                                     'AI_BRIDGE_CODEX': ''}), patch.object(b.shutil, 'which', return_value=None):
+            self.assertEqual(b.executable_for('chatgpt', self.base, {}), [str(new.resolve())])
+            self.assertEqual(b.executable_for('chatgpt', self.base, {'codex_path': str(old)}),
+                             [str(old.resolve())])
+
     def test_real_async_worker_reports_missing_cli(self):
         self.config['codex_path'] = str(self.base / 'nonexistent-cli.exe')
         b.atomic_json(self.base / 'bridge-config.json', self.config)

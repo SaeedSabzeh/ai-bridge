@@ -16,4 +16,11 @@ Build a local Windows workspace where Claude Code and Codex can lead a task in e
 
 Use a small actual project before committing to a long competition run. Record the workspace, the objective and constraints, the validation split, and the approved commands. No installer or shared concurrent editing mode is needed for the current single-lead workflow.
 
+The desktop app discovers the versioned Codex installation even outside the
+Codex shell and has official CLI sign-in buttons. An optional [Google Cloud
+host plan](cloud/README.md) runs the same app on a dedicated Windows VM. Claude's
+review highlighted the need to test disconnected Windows sessions and restart
+recovery. The plan uses no attached Google service account, and it does not
+enable auto-logon or replay a model call after a restart.
+
 See [README.md](README.md) for launch, recovery, and experiment instructions and [APP-REQUIREMENTS.md](APP-REQUIREMENTS.md) for acceptance scenarios.
