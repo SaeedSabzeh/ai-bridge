@@ -10,7 +10,6 @@ import tempfile
 import threading
 import time
 import unittest
-import urllib.request
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'ai_bridge.py'
@@ -34,22 +33,14 @@ class BridgeTest(unittest.TestCase):
             if question == 'simulate error':
                 raise RuntimeError('Simulated unavailable model')
             return 'TEST DOUBLE: ' + question + ' / ' + context
-        config = dict(self.config, port=0)
-        self.server = b.BridgeServer(self.base, config, runner)
-        self.config['port'] = self.server.server_port
-        b.atomic_json(self.base / 'bridge-config.json', self.config)
-        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01})
-        self.thread.start()
-        self.worker_patch = patch.object(b, 'launch_worker', side_effect=lambda base, job_id: self.server.mailbox.pools[b.read_json(base / 'data/requests' / (job_id + '.json'))['recipient']].submit(self.server.mailbox.work, job_id))
+        self.mailbox = b.Mailbox(self.base, self.config, runner)
+        self.worker_patch = patch.object(b, 'launch_worker', side_effect=lambda base, job_id: self.mailbox.pools[b.read_json(base / 'data/requests' / (job_id + '.json'))['recipient']].submit(self.mailbox.work, job_id))
         self.worker_patch.start()
 
     def tearDown(self):
         self.worker_patch.stop()
         self.release.set()
-        self.server.shutdown()
-        self.thread.join(5)
-        self.server.mailbox.close()
-        self.server.server_close()
+        self.mailbox.close()
         self.temp.cleanup()
 
     def submit(self, **changes):
@@ -94,20 +85,6 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(result['answer'], '4')
         self.assertEqual(result['answered_by'], 'manual:chatgpt')
         self.assertEqual(self.calls, [])
-
-    def test_auth_origin_and_host_protection(self):
-        token = self.server.token
-        for headers, expected in [({}, 401), ({'Authorization': 'Bearer wrong'}, 401),
-                ({'Authorization': 'Bearer ' + token, 'Origin': 'https://evil.example'}, 403),
-                ({'Authorization': 'Bearer ' + token, 'Host': 'evil.example'}, 403)]:
-            handler = b.BridgeHandler.__new__(b.BridgeHandler)
-            handler.server, handler.path = self.server, '/api/requests'
-            handler.headers = {'Host': f'127.0.0.1:{self.config["port"]}', **headers}
-            with self.assertRaises(b.BridgeError) as caught:
-                handler.validate()
-            self.assertEqual(caught.exception.status, expected)
-        handler.headers = {'Host': f'127.0.0.1:{self.config["port"]}', 'Authorization': 'Bearer ' + token}
-        handler.validate()
 
     def test_inputs_and_traversal_rejected(self):
         for changes in ({'question': ''}, {'question': 123}, {'context': []}, {'context': 'x' * 80001},

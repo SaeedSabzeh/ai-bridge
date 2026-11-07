@@ -1,0 +1,5 @@
+{
+  "name": "ai-bridge",
+  "owner": { "name": "Saeed Sabzeh" },
+  "plugins": [{ "name": "chatgpt-bridge", "source": "./plugin" }]
+}
