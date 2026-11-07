@@ -57,6 +57,9 @@ test('cards show speakers, colored status chips and rounds on every surface', as
     expect(await ui.find({ type: 'Text', text: /round 2/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /ChatGPT's reply/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Waiting in Claude's inbox/ })).toBeDefined()
+    // Newest first: the inbox question (30 s old) is drawn before the oldest, failed one.
+    const chips = (await ui.findAll({ type: 'Text', text: /^ (Replied|Thinking|In inbox|Failed) $/ })).map(t => t.text.trim())
+    expect(chips).toEqual(['In inbox', 'Thinking', 'Replied', 'Failed'])
     await ui.unmount()
   }
 })

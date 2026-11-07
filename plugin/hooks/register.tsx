@@ -153,7 +153,8 @@ export const register: Register = on => {
     const list = await read($, exchanges)
     const count = await read($, shown)
     const issue = await read($, problem)
-    const visible = list.slice(-count)
+    // Newest first: the latest exchange sits at the top of the panel.
+    const visible = list.slice(-count).reverse()
     const hidden = list.length - visible.length
     // Round number of each exchange within its topic, so a back-and-forth reads as one conversation.
     const rounds = new Map<string, number>()
@@ -171,12 +172,6 @@ export const register: Register = on => {
           <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
             <Text bold>No conversation yet.</Text>
             <Text dimColor>When Claude asks ChatGPT for an idea, a second opinion or a translation check, it shows up here.</Text>
-          </Box>
-        )}
-        {hidden > 0 && (
-          <Box flexDirection="row" gap={1}>
-            <Button key="more" label={`Show ${Math.min(STEP, hidden)} earlier`} onPress={() => void update($, shown, n => n + STEP)} />
-            <Text dimColor>{hidden} earlier</Text>
           </Box>
         )}
         {visible.map(item => {
@@ -214,6 +209,12 @@ export const register: Register = on => {
             </Box>
           )
         })}
+        {hidden > 0 && (
+          <Box flexDirection="row" gap={1}>
+            <Button key="more" label={`Show ${Math.min(STEP, hidden)} earlier`} onPress={() => void update($, shown, n => n + STEP)} />
+            <Text dimColor>{hidden} earlier</Text>
+          </Box>
+        )}
         {count > STEP && hidden === 0 && list.length > STEP && <Button key="less" label="Show fewer" onPress={() => void update($, shown, () => STEP)} />}
       </Box>
     )
