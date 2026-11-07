@@ -7,10 +7,12 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from typing import NamedTuple
 
 from ai_bridge import (BASE, BridgeError, Mailbox, atomic_json, auth_status, clean_env,
                        config_for, executable_for)
@@ -19,6 +21,11 @@ from workspace_state import FIELDS, Store
 
 NAMES = {"claude": "Claude Code", "chatgpt": "ChatGPT / Codex"}
 BG, CARD, INK, QUIET, ACCENT = "#eff3f8", "#ffffff", "#18263b", "#53647b", "#2154ad"
+SHORT = {"claude": "Claude", "chatgpt": "Codex"}
+PILLS = {"green": ("#d6f0de", "#14532d"), "amber": ("#fdebc8", "#7a4a05"), "slate": ("#dbe5f1", "#33475f"),
+         "purple": ("#e7dcf8", "#4a2a86"), "blue": ("#dce9ff", "#1c4590"), "grey": ("#e6e9ee", "#4a5568"),
+         "red": ("#f8d7d7", "#8a1f1f")}
+INLINE_NOTE =re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`)")
 
 
 def stamp(value):
@@ -28,6 +35,133 @@ def stamp(value):
         return dt.datetime.fromisoformat(value).astimezone().strftime("%d %b %H:%M:%S")
     except ValueError:
         return value
+
+
+class Activity(NamedTuple):
+    key: str
+    time: str
+    title: str
+    actor: str
+    sections: tuple[tuple[str, str], ...]
+
+
+def display_value(value):
+    if isinstance(value, dict):
+        return "\n".join(f"{key}: {display_value(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return "\n".join(f"• {display_value(item)}" for item in value)
+    return "" if value is None else str(value)
+
+
+def task_activity(task, requests):
+    records = []
+    for index, event in enumerate(task["events"]):
+        kind = event["kind"]
+        title = {
+            "created": "Task created", "checkpoint": "Checkpoint updated",
+            "file written": "File updated", "lead transferred": "Lead switched",
+        }.get(kind, kind.replace("run ", "turn ", 1).capitalize() if kind.startswith("run ") else kind.capitalize())
+        actor = NAMES.get(event.get("lead"), "")
+        fields = event.get("fields", {})
+        sections = [(FIELDS.get(key, key), display_value(value)) for key, value in fields.items()]
+        for key, label in (
+            ("detail", "Summary"), ("path", "File"), ("metrics", "Measured results"),
+            ("generation", "Generation"), ("experiment", "Experiment ID"), ("run", "Run ID"),
+        ):
+            if key in event:
+                sections.append((label, display_value(event[key])))
+        if event.get("outgoing") and event.get("incoming"):
+            actor = " → ".join(NAMES.get(event[key], event[key]) for key in ("outgoing", "incoming"))
+        records.append(Activity(f"{task['id']}-event-{index}", event["at"], title, actor, tuple(sections)))
+    for item in requests:
+        if item["task_id"] != task["id"]:
+            continue
+        request_id = item["id"]
+        sender = NAMES.get(item["sender"], "You")
+        adviser = NAMES[item["recipient"]]
+        sections = [("Question", item["question"])]
+        if item["context"]:
+            sections.append(("Shared context", item["context"]))
+        if item["status"] in {"queued", "running"}:
+            sections.append(("Status", "Awaiting a reply."))
+        records.append(Activity(f"{request_id}-question", item["created_at"], "Review requested",
+                                f"{sender} → {adviser}", tuple(sections)))
+        if item["status"] in {"answered", "failed", "cancelled"}:
+            title = "Adviser reply" if item["answer"] else f"Review {item['status']}"
+            sections = ([("Reply", item["answer"])] if item["answer"] else
+                        [("Status", item["error"] or title + ".")])
+            sections.append(("Original question", item["question"]))
+            records.append(Activity(f"{request_id}-reply", item["updated_at"], title, adviser, tuple(sections)))
+    # Two entries can share a timestamp on Windows. Show the later entry first.
+    return sorted(reversed(records), key=lambda entry: entry.time, reverse=True)
+
+
+def start_blocker(task, state):
+    if not task:
+        return "Select or add a task to start."
+    if task["status"] == "completed":
+        return "This task is complete. Add a task to continue the project."
+    if task["transfer"]:
+        return "A lead switch is in progress."
+    if task["active"]:
+        return "This turn is already in progress."
+    running = next((other for other in state["tasks"].values() if other["active"]), None)
+    if running:
+        name = state["projects"][running["project"]]["name"]
+        return f"A turn in {name} is in progress. Wait for it to finish or stop it from that task."
+    if state["limited"].get(task["lead"]):
+        return f"{NAMES[task['lead']]} reached a usage limit. Switch leads or check Connections after it resets."
+    return ""
+
+
+def task_status(task):
+    """Return (pill text, (background, foreground), plain-language line) for a task."""
+    lead = NAMES[task["lead"]]
+    active, status = task["active"], task["status"]
+    if task["transfer"]:
+        text = f"{lead} → {NAMES[task['transfer']['to']]} when the current work stops"
+        return "Waiting for handover", PILLS["purple"], text
+    if active and active["control"]:
+        stopping = active["control"] == "stop"
+        return ("Stopping" if stopping else "Finishing"), PILLS["amber"], (
+            "Stopping the current work" if stopping else "Pausing after the current work")
+    if status in {"working", "queued"} or active:
+        return "Running", PILLS["green"], f"{lead} is " + ("working" if status == "working" else "starting")
+    known = {"ready": ("Ready", "blue", "Start when ready"), "paused": ("Paused", "amber", "Resume when ready"),
+             "stopped": ("Stopped", "grey", "Resume when ready"),
+             "completed": ("Completed", "slate", ""),
+             "failed": ("Failed", "red", "Check the Timeline, then resume"),
+             "limit reached": ("Usage limit", "amber", f"{lead} reached its limit"),
+             "interrupted": ("Interrupted", "amber", "Recover from the More menu, then resume")}
+    label, colour, text = known.get(status, (status.capitalize(), "grey", ""))
+    return label, PILLS[colour], text
+
+
+def insert_note(area, note):
+    code = False
+    for line in note.split("\n"):
+        if line.strip().startswith("```"):
+            code = not code
+            continue
+        if code:
+            area.insert("end", line + "\n", "code")
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+)", line)
+        if heading:
+            area.insert("end", heading[1] + "\n", "section")
+            continue
+        quote = line.startswith("> ")
+        if quote:
+            line = line[2:]
+        line = re.sub(r"^(\s*)[-*] ", r"\1• ", line)
+        for index, part in enumerate(INLINE_NOTE.split(line)):
+            if index % 2 == 0:
+                area.insert("end", part, "muted" if quote else ())
+            elif part.startswith("**"):
+                area.insert("end", part[2:-2], "emphasis")
+            else:
+                area.insert("end", part[1:-1], "code")
+        area.insert("end", "\n")
 
 
 class Form(tk.Toplevel):
@@ -90,14 +224,17 @@ class App(tk.Tk):
         self.project_id = self.task_id = None
         self.results = queue.Queue()
         self.connection_busy = False
+        self.connection_pending = False
         self.connection_results = {}
         self.login_processes = {}
         self.last_activity = None
+        self.activity_rows = {}
+        self.activity_selection = None
         self.style()
         self.layout()
         self.refresh()
         self.after(180, self.drain_results)
-        self.after(350, self.connections)
+        self.after(350, self.refresh_connections)
 
     def style(self):
         style = ttk.Style(self)
@@ -152,25 +289,30 @@ class App(tk.Tk):
         self.title_label.pack(anchor="w", pady=(0, 4))
         self.path_label = ttk.Label(detail, style="Muted.TLabel", wraplength=730)
         self.path_label.pack(anchor="w")
-        self.badge = ttk.Label(detail, style="Badge.TLabel", wraplength=750)
-        self.badge.pack(anchor="w", pady=(6, 1))
+        status_row = ttk.Frame(detail)
+        status_row.pack(fill="x", pady=(6, 1))
+        self.pill = tk.Label(status_row, font=("Segoe UI Semibold", 9), padx=10, pady=2)
+        self.badge = ttk.Label(status_row, style="Badge.TLabel", wraplength=650)
+        self.badge.pack(side="left", padx=(0, 0))
         self.next_label = ttk.Label(detail, style="Muted.TLabel", wraplength=750)
         self.next_label.pack(anchor="w", pady=(0, 6))
-        self.controls = []
-        for buttons in [
-            [("Start / Resume", self.start, True), ("Pause", lambda: self.control("pause"), False),
-             ("Stop", lambda: self.control("stop"), False), ("Switch lead", self.switch, False),
-             ("Ask adviser", self.review, False)],
-            [("Edit checkpoint", self.edit_checkpoint, False), ("Open checkpoint", self.open_checkpoint, False),
-             ("Open workspace", self.open_workspace, False), ("Recover interrupted run", self.recover, False)],
-        ]:
-            bar = ttk.Frame(detail)
-            bar.pack(fill="x", pady=(0, 5))
-            for label, command, primary in buttons:
-                button = ttk.Button(bar, text=label, command=lambda fn=command: self.guard(fn),
-                                    style="Primary.TButton" if primary else "TButton")
-                button.pack(side="left", padx=(0, 5))
-                self.controls.append(button)
+        self.start_hint = ttk.Label(detail, style="Muted.TLabel", wraplength=640)
+        self.primary_actions = bar = ttk.Frame(detail)
+        bar.pack(fill="x", pady=(0, 5))
+        self.primary_button = ttk.Button(bar, style="Primary.TButton")
+        self.stop_button = ttk.Button(bar, text="Stop", command=lambda: self.guard(lambda: self.control("stop")))
+        self.handover_button = ttk.Button(bar, command=lambda: self.guard(self.switch))
+        self.opinion_button = ttk.Button(bar, text="Get a second opinion", command=lambda: self.guard(self.review))
+        self.more_menu = tk.Menu(bar, tearoff=0)
+        for key, label, command in (("edit", "Edit checkpoint…", self.edit_checkpoint),
+                                    ("open_checkpoint", "Open checkpoint file", self.open_checkpoint),
+                                    ("folder", "Open project folder", self.open_workspace),
+                                    ("recover", "Recover interrupted run", self.recover)):
+            self.more_menu.add_command(label=label, command=lambda fn=command: self.guard(fn))
+        self.more_keys = ("edit", "open_checkpoint", "folder", "recover")
+        self.more_button = ttk.Menubutton(bar, text="More ▾", menu=self.more_menu)
+        self.action_widgets = (self.primary_button, self.stop_button, self.handover_button,
+                               self.opinion_button, self.more_button)
         self.tabs = ttk.Notebook(detail)
         self.tabs.pack(fill="both", expand=True, pady=(5, 0))
         self.pages = {}
@@ -179,8 +321,10 @@ class App(tk.Tk):
             self.tabs.add(page, text=label)
             if label == "Diagnostics":
                 ttk.Button(page, text="Refresh run logs", command=lambda: self.guard(self.logs)).pack(anchor="w", padx=10, pady=8)
+            if label == "Timeline":
+                self.layout_timeline(page)
+                continue
             self.pages[label] = self.reader(page)
-        self.pages["Timeline"].tag_configure("entry", foreground=ACCENT, font=("Segoe UI Semibold", 11))
         self.pages["Checkpoint"].tag_configure("section", foreground=ACCENT, font=("Segoe UI Semibold", 12))
         foot = ttk.Frame(self, padding=(20, 4, 20, 11))
         foot.pack(fill="x")
@@ -188,6 +332,35 @@ class App(tk.Tk):
         self.notice.pack(side="left")
         self.health = ttk.Label(foot, text="Checking CLI connections…", style="Muted.TLabel")
         self.health.pack(side="right")
+
+    def layout_timeline(self, page):
+        header = ttk.Frame(page, padding=(1, 8, 1, 7))
+        header.pack(fill="x")
+        ttk.Label(header, text="Task activity", style="Strong.TLabel").pack(side="left")
+        ttk.Label(header, text="Newest first · Select an entry to read it",
+                  style="Muted.TLabel").pack(side="left", padx=12)
+        split = ttk.PanedWindow(page, orient="horizontal")
+        split.pack(fill="both", expand=True)
+        index, detail = ttk.Frame(split), ttk.Frame(split)
+        split.add(index, weight=0)
+        split.add(detail, weight=1)
+        scroll = ttk.Scrollbar(index)
+        scroll.pack(side="right", fill="y")
+        self.activity_list = ttk.Treeview(index, columns=("time", "activity"), show="headings",
+                                          selectmode="browse", yscrollcommand=scroll.set)
+        self.activity_list.heading("time", text="Time")
+        self.activity_list.heading("activity", text="Activity")
+        self.activity_list.column("time", width=103, minwidth=90, stretch=False)
+        self.activity_list.column("activity", width=127, minwidth=105)
+        self.activity_list.pack(side="left", fill="both", expand=True)
+        scroll.configure(command=self.activity_list.yview)
+        self.activity_list.bind("<<TreeviewSelect>>", self.read_activity)
+        area = self.pages["Timeline"] = self.reader(detail)
+        area.tag_configure("activity_title", font=("Segoe UI Semibold", 17), foreground=INK)
+        area.tag_configure("section", foreground=ACCENT, font=("Segoe UI Semibold", 11), spacing3=4)
+        area.tag_configure("emphasis", font=("Segoe UI Semibold", 11))
+        area.tag_configure("code", font=("Consolas", 10), foreground="#253b6d")
+        area.tag_configure("muted", foreground=QUIET)
 
     def reader(self, parent):
         holder = ttk.Frame(parent)
@@ -293,29 +466,21 @@ class App(tk.Tk):
         self.title_label.configure(text=project["name"] if project else "Set up your first project")
         self.path_label.configure(text=project["path"] if project else "Choose the folder where the assistants will work.")
         self.badge.configure(text="")
+        self.pill.pack_forget()
         self.next_label.configure(text="")
         if self.last_activity != self.task_id:
             self.show(self.pages["Diagnostics"], "Run logs stay local. Select Refresh run logs to inspect the latest turn.")
         self.last_activity = self.task_id
-        active = task and task["active"]
+        self.render_actions(project, task)
         terminal = task and task["status"] == "completed"
-        any_active = any(t["active"] for t in self.state["tasks"].values())
-        review_ready = task and not (active and active["control"])
-        enabled = [task and not any_active and not terminal and not self.state["limited"].get(task["lead"]),
-                   task and not terminal, task and not terminal, task and not terminal and not task["transfer"],
-                   review_ready, task and not active, task, project, active]
-        for button, on in zip(self.controls, enabled):
-            button.configure(state="normal" if on else "disabled")
         if not task:
             self.show(self.pages["Checkpoint"], "Add a project and a task to begin.")
             self.show(self.pages["Experiments"], "No experiments recorded.")
             return
-        status = task["status"].capitalize()
-        if task["transfer"]:
-            status += " → " + NAMES[task["transfer"]["to"]] + " pending"
-        if active and active["control"]:
-            status += " · " + ("stopping" if active["control"] == "stop" else "finishing current work")
-        self.badge.configure(text=f"{status}   |   Lead: {NAMES[task['lead']]}   |   Generation {task['generation']}")
+        label, colours, text = task_status(task)
+        self.pill.configure(text=label, bg=colours[0], fg=colours[1])
+        self.pill.pack(side="left", padx=(0, 10), before=self.badge)
+        self.badge.configure(text=text)
         next_step = task["checkpoint"]["next"] or task["objective"]
         self.next_label.configure(text="Task complete" if terminal else "Next: " + next_step[:350])
         self.render_checkpoint(task)
@@ -331,6 +496,49 @@ class App(tk.Tk):
             self.show(self.pages["Experiments"], "\n\n".join(rows))
         else:
             self.show(self.pages["Experiments"], "No experiments recorded.")
+
+    def render_actions(self, project, task):
+        """Show only the actions that apply to the selected task."""
+        active = task["active"] if task else None
+        completed = bool(task) and task["status"] == "completed"
+        pending = bool(task) and bool(active and active["control"])
+        reason = start_blocker(task, self.state)
+        visible = []
+        if active:
+            self.primary_button.configure(text="Pause", command=lambda: self.guard(lambda: self.control("pause")),
+                                          state="disabled" if pending else "normal")
+            visible += [self.primary_button, self.stop_button]
+            reason = ""
+        elif not completed:
+            fresh = bool(task) and task["status"] == "ready"
+            self.primary_button.configure(text="Start" if fresh or not task else "Resume",
+                                          command=lambda: self.guard(self.start),
+                                          state="disabled" if reason else "normal")
+            visible.append(self.primary_button)
+        else:
+            reason = ""
+        if task and not completed:
+            other = "claude" if task["lead"] == "chatgpt" else "chatgpt"
+            self.handover_button.configure(text="Hand over to " + SHORT[other])
+            if not task["transfer"]:
+                visible.append(self.handover_button)
+        if task and not pending:
+            visible.append(self.opinion_button)
+        if project:
+            visible.append(self.more_button)
+        for widget in self.action_widgets:
+            widget.pack_forget()
+        for widget in visible:
+            widget.pack(side="left", padx=(0, 5))
+        allowed = {"edit": task and not active, "open_checkpoint": task, "folder": project, "recover": active}
+        for index, key in enumerate(self.more_keys):
+            self.more_menu.entryconfigure(index, state="normal" if allowed[key] else "disabled")
+        if reason:
+            self.start_hint.configure(text=reason)
+            if not self.start_hint.winfo_manager():
+                self.start_hint.pack(after=self.primary_actions, anchor="w", pady=(0, 5))
+        else:
+            self.start_hint.pack_forget()
 
     def render_checkpoint(self, task):
         sections = [
@@ -351,27 +559,49 @@ class App(tk.Tk):
 
     def timeline(self):
         task = self.state["tasks"].get(self.task_id) if self.state else None
-        if not task:
-            self.show(self.pages["Timeline"], "Select a task to view its history.")
-            return
         records = []
-        for e in task["events"]:
-            detail = {k: v for k, v in e.items() if k not in {"kind", "at"}}
-            records.append((e["at"], e["kind"].capitalize(), json.dumps(detail, ensure_ascii=False, indent=2)))
-        box = Mailbox(self.store.base, config_for(self.store.base), external_workers=True)
-        for item in box.listing(limit=None):
-            if item["task_id"] == task["id"]:
-                records.append((item["created_at"], f"Review question · {NAMES.get(item['sender'], 'You')} → {NAMES[item['recipient']]}",
-                                item["question"] + ("\n\nContext: " + item["context"] if item["context"] else "")))
-                records.append((item["updated_at"], "Adviser suggestion" if item["answer"] else "Review " + item["status"],
-                                item["answer"] or item["error"] or "Awaiting a reply."))
-        result = "\n\n".join(f"{stamp(t)}  |  {name}\n{body}" for t, name, body in sorted(records, reverse=True))
+        if task:
+            box = Mailbox(self.store.base, config_for(self.store.base), external_workers=True)
+            records = task_activity(task, box.listing(limit=None))
+        rows = {entry.key: entry for entry in records}
+        if tuple(rows.items()) != tuple(self.activity_rows.items()):
+            selected = next(iter(self.activity_list.selection()), None)
+            follow_latest = selected == next(iter(self.activity_rows), None)
+            self.activity_rows = rows
+            self.activity_list.delete(*self.activity_list.get_children())
+            for entry in records:
+                self.activity_list.insert("", "end", iid=entry.key, values=(stamp(entry.time), entry.title))
+            if records:
+                choice = selected if selected in rows and not follow_latest else records[0].key
+                self.activity_list.selection_set(choice)
+                self.activity_list.focus(choice)
+                self.activity_list.see(choice)
+        self.read_activity()
+
+    def read_activity(self, _event=None):
+        key = next(iter(self.activity_list.selection()), None)
+        entry = self.activity_rows.get(key)
         area = self.pages["Timeline"]
-        if area.get("1.0", "end-1c") != result:
-            self.show(area, result)
-            for line, content in enumerate(result.splitlines(), 1):
-                if len(content) > 9 and content[:2].isdigit() and "  |  " in content:
-                    area.tag_add("entry", f"{line}.0", f"{line}.end")
+        if entry is None:
+            self.activity_selection = None
+            empty = "No activity yet." if self.task_id else "Select a task to view its history."
+            self.show(area, empty)
+            return
+        if entry == self.activity_selection:
+            return
+        self.activity_selection = entry
+        area.configure(state="normal")
+        area.delete("1.0", "end")
+        area.insert("end", entry.title + "\n", "activity_title")
+        byline = "   ·   ".join(part for part in (entry.actor, stamp(entry.time)) if part)
+        area.insert("end", byline + "\n\n", "muted")
+        for label, note in entry.sections:
+            if note:
+                area.insert("end", label + "\n", "section")
+                insert_note(area, note)
+                area.insert("end", "\n")
+        area.configure(state="disabled")
+        area.yview_moveto(0)
 
     def add_project(self):
         folder = filedialog.askdirectory(parent=self, mustexist=True, title="Choose a local project workspace")
@@ -488,8 +718,22 @@ class App(tk.Tk):
                   + "\n\nPROVIDER OUTPUT (tail)\n" + (tail(directory / "provider.jsonl", 18000) or "No output.")
                   + "\n\nSUPERVISOR LOG (tail)\n" + (tail(self.store.home / "supervisor.log", 7000) or "No errors."))
 
+    def refresh_connections(self):
+        popup = getattr(self, "connection_window", None)
+        focused_and_disconnected = self.focus_displayof() is not None and any(
+            not result[0] for result in self.connection_results.values()
+        )
+        if not self.connection_busy and (
+            not self.connection_results or self.login_processes or
+            focused_and_disconnected or
+            (popup and popup.winfo_exists() and popup.winfo_viewable())
+        ):
+            self.connections()
+        self.after(5000, self.refresh_connections)
+
     def connections(self):
         if self.connection_busy:
+            self.connection_pending = True
             return
         self.connection_busy = True
         def check():
@@ -512,9 +756,13 @@ class App(tk.Tk):
             self.health.configure(text="   ·   ".join(f"{NAMES[k]}: {'ready' if v[0] else 'disconnected'}"
                                                        for k, v in self.connection_results.items()))
             self.update_connections_panel()
+            if self.connection_pending:
+                self.connection_pending = False
+                self.connections()
         except queue.Empty:
             pass
-        self.after(180, self.drain_results)
+        finally:
+            self.after(180, self.drain_results)
 
     def show_connections(self):
         if getattr(self, "connection_window", None) and self.connection_window.winfo_exists():
@@ -560,11 +808,12 @@ class App(tk.Tk):
         self.after(500, lambda: self.watch_sign_in(peer))
 
     def watch_sign_in(self, peer):
-        if self.login_processes[peer].poll() is None or self.connection_busy:
+        if self.login_processes[peer].poll() is None:
             self.after(500, lambda: self.watch_sign_in(peer))
         else:
             del self.login_processes[peer]
             self.connections()
+            self.update_connections_panel()
 
     def show_mailbox(self):
         popup = tk.Toplevel(self)
@@ -590,14 +839,14 @@ class App(tk.Tk):
     def update_connections_panel(self):
         if not hasattr(self, "connection_text") or not self.connection_text.winfo_exists():
             return
-        limits = self.store.read()["limited"]
+        limits = (self.state or {}).get("limited", {})
         values = ["If both assistants show Ready, you can start a task. If one is signed out, "
                   "use its Sign in button and choose your subscription account."]
         for peer, name in NAMES.items():
             ready, cmd, detail = self.connection_results.get(peer, (False, [], "Checking connection…"))
-            status = ("Signing in…" if peer in self.login_processes else
-                      "Limit reached" if peer in limits else
-                      "Ready" if ready else "Sign-in required" if cmd else
+            status = ("Limit reached" if ready and peer in limits else
+                      "Ready" if ready else "Signing in…" if peer in self.login_processes else
+                      "Sign-in required" if cmd else
                       "Checking…" if self.connection_busy else "CLI not found")
             if not ready and not cmd and not self.connection_busy:
                 detail = "Install its CLI or select the existing executable under CLI settings."
@@ -625,8 +874,8 @@ class App(tk.Tk):
 
     def clear_limit(self, peer):
         self.store.clear_limit(peer)
-        self.update_connections_panel()
         self.sync()
+        self.update_connections_panel()
 
 
 def subprocess_display(args):

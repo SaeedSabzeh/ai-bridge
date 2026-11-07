@@ -21,6 +21,12 @@ For a separate host that can run tasks while your PC is off, see the
    text files, consult its adviser, and run any command preset you approved for
    that project. It saves useful progress before it ends. A task stays paused
    between turns until you resume it or the lead marks it complete.
+   When **Start / Resume** is unavailable, the app shows the reason below the
+   controls. The project list marks a project with an active turn with ●.
+   If a lead reaches a usage limit, **Connections** shows **Limit reached**.
+   Use **Switch lead**, or wait for the provider's reset and clear its limit.
+   In **Timeline**, select a turn, checkpoint, question, or reply to read it.
+   **Mailbox history** lists exchanges from every task.
 4. Use **Switch lead** to finish the current turn first or stop it immediately.
    The app saves file state and increments the ownership generation before
    the new lead starts. By default the new lead continues from disk without
