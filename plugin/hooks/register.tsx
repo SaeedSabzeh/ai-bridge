@@ -30,11 +30,23 @@ const started = new Set<string>()
 const name = (who: string) => NAMES[who] ?? who
 const text = (value: unknown) => (typeof value === 'string' ? value : value == null ? '' : String(value))
 const clip = (value: string, max: number) => (value.length > max ? value.slice(0, max) + '\n\n…' : value)
+// Each speaker keeps one color everywhere: card border, name and reply heading. Theme keys follow light/dark mode.
+const COLORS: Record<string, 'claude' | 'suggestion' | 'permission'> = { claude: 'claude', chatgpt: 'suggestion', user: 'permission' }
+const colorOf = (who: string) => COLORS[who] ?? 'subtle'
 const waiting = (item: Exchange) => item.status === 'queued' || item.status === 'running'
 // A manual question waits for the recipient's live session to answer it from its inbox; no worker runs.
 const inInbox = (item: Exchange) => item.status === 'queued' && item.mode === 'manual'
 const pending = (item: Exchange) =>
   inInbox(item) ? `Waiting in ${name(item.to)}'s inbox (manual question)` : `${name(item.to)} is thinking…`
+
+// The colored chip in each card's corner.
+function status(item: Exchange): { label: string; color: 'success' | 'warning' | 'suggestion' | 'error' | 'inactive' } {
+  if (item.answer) return { label: 'Replied', color: 'success' }
+  if (inInbox(item)) return { label: 'In inbox', color: 'suggestion' }
+  if (waiting(item)) return { label: 'Thinking', color: 'warning' }
+  if (item.status === 'cancelled') return { label: 'Cancelled', color: 'inactive' }
+  return { label: 'Failed', color: 'error' }
+}
 
 function when(stamp: string) {
   const date = new Date(stamp)
@@ -154,9 +166,9 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" gap={1}>
-        {issue && <Text color="red">{issue}</Text>}
+        {issue && <Text color="error">{issue}</Text>}
         {!issue && list.length === 0 && (
-          <Box flexDirection="column">
+          <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
             <Text bold>No conversation yet.</Text>
             <Text dimColor>When Claude asks ChatGPT for an idea, a second opinion or a translation check, it shows up here.</Text>
           </Box>
@@ -167,28 +179,41 @@ export const register: Register = on => {
             <Text dimColor>{hidden} earlier</Text>
           </Box>
         )}
-        {visible.map(item => (
-          <Box key={item.id} flexDirection="column">
-            <Text>
-              <Text bold>{name(item.from)} → {name(item.to)}</Text>
-              <Text dimColor>
-                {'  ·  '}{when(item.created)}{item.task ? `  ·  ${item.task}` : ''}
-                {item.task && (rounds.get(item.id) ?? 1) > 1 ? `  ·  round ${rounds.get(item.id)}` : ''}
-              </Text>
-            </Text>
-            <Markdown text={clip(item.question, 1500)} />
-            {item.answer ? (
-              <Box flexDirection="column" marginTop={1}>
-                <Text bold color="green">{name(item.to)} replied  <Text dimColor>{when(item.updated)}</Text></Text>
-                <Markdown text={clip(item.answer, 6000)} />
+        {visible.map(item => {
+          const chip = status(item)
+          const round = rounds.get(item.id) ?? 1
+          return (
+            <Box key={item.id} flexDirection="column" borderStyle="round" borderColor={colorOf(item.from)} paddingX={1}>
+              <Box flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={1}>
+                <Text>
+                  <Text bold color={colorOf(item.from)}>{name(item.from)}</Text>
+                  <Text dimColor>{' → '}</Text>
+                  <Text bold color={colorOf(item.to)}>{name(item.to)}</Text>
+                </Text>
+                <Text backgroundColor={chip.color} color="inverseText" bold>{` ${chip.label} `}</Text>
               </Box>
-            ) : waiting(item) ? (
-              <Text color="yellow">{pending(item)}</Text>
-            ) : (
-              <Text color="red">{item.status === 'cancelled' ? 'Cancelled' : `No reply: ${item.error || item.status}`}</Text>
-            )}
-          </Box>
-        ))}
+              <Text dimColor>
+                {when(item.created)}
+                {item.task ? `  ·  ${item.task}` : ''}
+                {item.task && round > 1 ? `  ·  round ${round}` : ''}
+              </Text>
+              <Markdown text={clip(item.question, 1500)} />
+              {item.answer ? (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text bold color={colorOf(item.to)}>
+                    {`${name(item.to)}'s reply`}
+                    <Text dimColor>{'  ·  '}{when(item.updated)}</Text>
+                  </Text>
+                  <Markdown text={clip(item.answer, 6000)} />
+                </Box>
+              ) : waiting(item) ? (
+                <Text color={chip.color}>{pending(item)}</Text>
+              ) : (
+                <Text color="error">{item.status === 'cancelled' ? 'Cancelled' : `No reply: ${item.error || item.status}`}</Text>
+              )}
+            </Box>
+          )
+        })}
         {count > STEP && hidden === 0 && list.length > STEP && <Button key="less" label="Show fewer" onPress={() => void update($, shown, () => STEP)} />}
       </Box>
     )
