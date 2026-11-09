@@ -44,22 +44,23 @@ test('cards show speakers, colored status chips and rounds on every surface', as
   // The engine hands over Windows paths with backslashes.
   on('fs.read', (_, e) => ({ value: JSON.stringify(FILES[String(e.path).split(/[\\/]/).pop() ?? '']) }))
   // The rescue may start a worker for an old queued auto question; none here is one.
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify({ root: '/bridge', base: '/bridge', python: 'python' }),
+    stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
 
   await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /^ Replied $/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^ Thinking $/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /^ In inbox $/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ Answered $/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ Working $/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ Waiting in inbox $/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^ Failed $/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /round 2/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /ChatGPT's reply/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Waiting in Claude's inbox/ })).toBeDefined()
     // Newest first: the inbox question (30 s old) is drawn before the oldest, failed one.
-    const chips = (await ui.findAll({ type: 'Text', text: /^ (Replied|Thinking|In inbox|Failed) $/ })).map(t => t.text.trim())
-    expect(chips).toEqual(['In inbox', 'Thinking', 'Replied', 'Failed'])
+    const chips = (await ui.findAll({ type: 'Text', text: /^ (Answered|Working|Waiting in inbox|Failed) $/ })).map(t => t.text.trim())
+    expect(chips).toEqual(['Waiting in inbox', 'Working', 'Answered', 'Failed'])
     await ui.unmount()
   }
 })

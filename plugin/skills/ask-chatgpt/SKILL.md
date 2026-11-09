@@ -20,9 +20,9 @@ Don't ask for trivial things, and never just to hand off thinking you could do y
    (a pick with reasons, a list of ideas, a review of risks).
 2. Add only the minimum context needed (relevant code snippet, error, constraints).
    Never include credentials, tokens, `.env` contents, API keys or unrelated personal data.
-3. Call the MCP tool `mcp__local-ai-bridge__ask_peer` with `question`, `context`, and a short
-   `task_id` (letters, digits, `-`, `_`). The bridge keeps one ChatGPT session per `task_id`, so
-   follow-ups with the same ID continue the same conversation and ChatGPT remembers it all.
+3. Call the MCP tool `mcp__local-ai-bridge__ask_peer` with `question`, `context`, and an optional
+   `topic` label. Reuse the returned `task_id` only for follow-ups on that subject.
+   For a long discussion, save decisions and open questions with `save_checkpoint`.
    For a real back-and-forth, use the discuss-with-chatgpt skill.
 4. If the reply is not ready, poll with `mcp__local-ai-bridge__read_reply` using the returned
    `request_id`. Never resubmit the same question just because waiting ended.
@@ -33,7 +33,7 @@ Don't ask for trivial things, and never just to hand off thinking you could do y
 
 If the bridge tools are missing or ChatGPT's limit is reached, say so in one line and continue
 on your own. Fallback CLI (from the bridge folder):
-`python ai_bridge.py ask --from claude --to chatgpt --task TASK --question-file Q.txt --context-file C.txt --wait 45`
+`python ai_bridge.py ask --from claude --to chatgpt --topic LABEL --question-file Q.txt --context-file C.txt --wait 45`
 
 ## When ChatGPT asks Claude
 ChatGPT can send Claude a **manual** question; it waits in Claude's inbox (the panel and status line
