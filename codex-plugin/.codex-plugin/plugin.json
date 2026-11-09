@@ -1,0 +1,13 @@
+{
+  "name": "claude-bridge",
+  "version": "1.0.0",
+  "description": "Ask Claude and follow Claude–Codex replies in the local AI Bridge.",
+  "mcpServers": "./.mcp.json",
+  "requires_local_executor": true,
+  "interface": {
+    "displayName": "Claude Bridge",
+    "shortDescription": "Consult Claude and view the shared local conversation.",
+    "category": "Productivity",
+    "defaultPrompt": ["Show the recent Claude–Codex conversation."]
+  }
+}

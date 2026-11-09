@@ -3,15 +3,39 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Exchange } from '../types'
 
-// The local AI Bridge folder; it keeps one JSON file per question under data/requests.
-const BRIDGE = 'C:/Users/SAEED/Desktop/ChatGPT/2026-11-07/new-chat-2/ai-bridge'
-const REQUESTS = `${BRIDGE}/data/requests`
-const PYTHON = 'C:/Users/SAEED/AppData/Local/Programs/Python/Python311/python.exe'
+const DISCOVER = `
+import json, os, sys
+from pathlib import Path
+
+def valid(folder):
+    return (folder / 'ai_bridge.py').is_file() and (folder / 'peer_sessions.py').is_file()
+
+cwd = Path.cwd()
+override = os.environ.get('AI_BRIDGE_HOME')
+folders = [Path(override).expanduser()] if override else [cwd, *cwd.parents]
+root = next((folder.resolve() for folder in folders if valid(folder)), None)
+base = root
+if root is None and not override:
+    try:
+        settings = json.loads((Path.home() / '.claude.json').read_text(encoding='utf-8-sig'))
+        args = settings.get('mcpServers', {}).get('local-ai-bridge', {}).get('args', [])
+        script = next((Path(arg) for arg in args if Path(arg).name == 'ai_bridge.py'), None)
+        if script and valid(script.parent):
+            root = script.resolve().parent
+            base = Path(args[args.index('--data-dir') + 1]).resolve() if '--data-dir' in args else root
+    except (OSError, ValueError, TypeError, AttributeError, IndexError):
+        pass
+if root is None:
+    raise SystemExit('Bridge location not found.')
+print(json.dumps(dict(root=str(root), base=str(base), python=sys.executable)))
+`
+type BridgeLocation = { root: string; base: string; python: string }
+let location: BridgeLocation | undefined
 // A question still queued this long after it was sent gets its worker started from here:
 // Codex's Windows sandbox can stop the worker it starts for questions addressed to Claude.
 const GRACE_MS = 8000
 // Starts a detached bridge worker that outlives this plugin; args: bridge folder, request ID.
-const LAUNCH = 'import sys, pathlib; sys.path.insert(0, sys.argv[1]); import ai_bridge; ai_bridge.launch_worker(pathlib.Path(sys.argv[1]), sys.argv[2])'
+const LAUNCH = 'import sys, pathlib, ai_bridge; ai_bridge.launch_worker(pathlib.Path(sys.argv[1]), sys.argv[2])'
 const PANE = 'chatgpt-conversation'
 const TITLE = 'Claude ↔ ChatGPT'
 const NAMES: Record<string, string> = { claude: 'Claude', chatgpt: 'ChatGPT', user: 'You' }
@@ -37,13 +61,15 @@ const waiting = (item: Exchange) => item.status === 'queued' || item.status === 
 // A manual question waits for the recipient's live session to answer it from its inbox; no worker runs.
 const inInbox = (item: Exchange) => item.status === 'queued' && item.mode === 'manual'
 const pending = (item: Exchange) =>
-  inInbox(item) ? `Waiting in ${name(item.to)}'s inbox (manual question)` : `${name(item.to)} is thinking…`
+  inInbox(item) ? `Waiting in ${name(item.to)}'s inbox (manual question)` :
+    item.status === 'queued' ? `Waiting for ${name(item.to)}` : `${name(item.to)} is working…`
 
 // The colored chip in each card's corner.
 function status(item: Exchange): { label: string; color: 'success' | 'warning' | 'suggestion' | 'error' | 'inactive' } {
-  if (item.answer) return { label: 'Replied', color: 'success' }
-  if (inInbox(item)) return { label: 'In inbox', color: 'suggestion' }
-  if (waiting(item)) return { label: 'Thinking', color: 'warning' }
+  if (item.status === 'answered') return { label: 'Answered', color: 'success' }
+  if (inInbox(item)) return { label: 'Waiting in inbox', color: 'suggestion' }
+  if (item.status === 'queued') return { label: 'Waiting', color: 'warning' }
+  if (item.status === 'running') return { label: 'Working', color: 'warning' }
   if (item.status === 'cancelled') return { label: 'Cancelled', color: 'inactive' }
   return { label: 'Failed', color: 'error' }
 }
@@ -66,13 +92,30 @@ function parse(raw: string): Exchange | undefined {
   }
 }
 
+async function discover($: EngineInterface, cwd: string) {
+  for (const launcher of [['python'], ['py', '-3']]) {
+    try {
+      const run = await $.process.run([...launcher, '-c', DISCOVER], { cwd, timeoutMs: 5000 })
+      if (run.exitCode === 0) {
+        const value = JSON.parse(run.stdout)
+        if (value.root && value.base && value.python) return value as BridgeLocation
+      }
+    } catch {
+      // Try the Windows Python launcher if Python is not on PATH.
+    }
+  }
+  await update($, problem, () => 'Bridge location not found. Open the bridge folder, register its MCP entry, or set AI_BRIDGE_HOME.')
+}
+
 // Re-reads only files whose modification time changed, then updates the list, status and toasts.
 async function scan($: EngineInterface) {
+  if (!location) return
+  const requests = `${location.base}/data/requests`
   let entries
   try {
-    entries = (await $.fs.list(REQUESTS)).filter(entry => entry.kind === 'file' && entry.name.endsWith('.json'))
+    entries = (await $.fs.list(requests)).filter(entry => entry.kind === 'file' && entry.name.endsWith('.json'))
   } catch {
-    await update($, problem, () => 'The bridge folder was not found. Check the path in the chatgpt-bridge mod.')
+    await update($, problem, () => 'The bridge mailbox could not be read. Run python ai_bridge.py doctor from the bridge folder.')
     return
   }
   const next = entries.map(entry => `${entry.name}:${entry.mtimeMs}`).sort().join('|')
@@ -87,7 +130,7 @@ async function scan($: EngineInterface) {
       continue
     }
     try {
-      const item = parse(await $.fs.read(`${REQUESTS}/${entry.name}`))
+      const item = parse(await $.fs.read(`${requests}/${entry.name}`))
       if (item) {
         cache.set(entry.name, [entry.mtimeMs, item])
         list.push(item)
@@ -115,13 +158,14 @@ async function scan($: EngineInterface) {
 
 // Starts the bridge worker for automatic questions nobody picked up, from outside any sandbox.
 async function rescue($: EngineInterface) {
+  if (!location) return
   const now = Date.now()
   for (const item of await read($, exchanges)) {
     const age = now - new Date(item.created).getTime()
     if (item.status !== 'queued' || item.mode !== 'auto' || !(age > GRACE_MS) || started.has(item.id)) continue
     started.add(item.id)
     try {
-      const run = await $.process.run([PYTHON, '-c', LAUNCH, BRIDGE, item.id], { cwd: BRIDGE, timeoutMs: 20000 })
+      const run = await $.process.run([location.python, '-c', LAUNCH, location.base, item.id], { cwd: location.root, timeoutMs: 20000 })
       if (run.exitCode !== 0) $.ui.toast(`Could not start the bridge worker: ${run.stderr.trim().slice(-160)}`)
     } catch (error) {
       $.ui.toast(`Could not start the bridge worker: ${String(error).slice(0, 160)}`)
@@ -132,9 +176,18 @@ async function rescue($: EngineInterface) {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'chatgpt', description: 'Show the Claude ↔ ChatGPT conversation panel' })
+    location = await discover($, e.cwd)
     await scan($)
     await rescue($)
     $.clock.every(2500, async () => {
+      if (location && (await read($, exchanges)).some(item => item.mode === 'auto' && waiting(item))) {
+        const { root, base, python } = location
+        try {
+          await $.process.run([python, `${root}/ai_bridge.py`, '--data-dir', base, 'reconcile'], { cwd: root, timeoutMs: 4000 })
+        } catch {
+          // The mailbox scan still shows the last recorded state.
+        }
+      }
       await scan($)
       await rescue($)
     })

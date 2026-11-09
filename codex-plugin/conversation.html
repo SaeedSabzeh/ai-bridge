@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude ↔ Codex</title>
+<style>
+  :root { color-scheme: light dark; font: 14px/1.5 system-ui, sans-serif; color: CanvasText; }
+  body { margin: 0; padding: 16px; background: Canvas; }
+  header, form, .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  header { justify-content: space-between; margin-bottom: 12px; }
+  h1 { font-size: 20px; line-height: 1.25; margin: 0; letter-spacing: -.02em; }
+  form { margin: 0 0 12px; }
+  input, button { font: inherit; color: inherit; background: Canvas; border: 1px solid GrayText;
+    border-radius: 8px; min-height: 32px; box-sizing: border-box; padding: 4px 10px; }
+  input { flex: 1; min-width: 100px; }
+  button { cursor: pointer; }
+  button:focus-visible, input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+  small, .meta { color: GrayText; }
+  #list { display: grid; gap: 10px; }
+  article { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+    border-radius: 12px; padding: 12px; min-width: 0; }
+  h2 { font-size: 14px; margin: 0; }
+  .meta { font-size: 12px; margin: 3px 0 8px; overflow-wrap: anywhere; }
+  .status { color: CanvasText; background: color-mix(in srgb, CanvasText 8%, Canvas);
+    border-radius: 20px; padding: 2px 8px; white-space: nowrap; }
+  p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .markdown { overflow-wrap: anywhere; }
+  .markdown > * { margin: 8px 0 0; }
+  .markdown h3, .markdown h4, .markdown h5, .markdown h6 { font-size: 1em; line-height: 1.35; }
+  .markdown h3 { font-size: 1.15em; }
+  .markdown ul, .markdown ol { padding-inline-start: 1.5em; }
+  .markdown li > p { margin: 0; }
+  .markdown li > p + p { margin-top: 4px; }
+  .markdown blockquote { margin-inline: 0; border-inline-start: 3px solid GrayText; padding-inline-start: 10px; }
+  .markdown code { background: color-mix(in srgb, CanvasText 8%, Canvas); border-radius: 4px; padding: 1px 4px; }
+  .markdown pre { background: color-mix(in srgb, CanvasText 8%, Canvas); border-radius: 6px;
+    padding: 8px; overflow: auto; }
+  .markdown pre code { background: transparent; padding: 0; }
+  .reply { margin-top: 9px; padding-top: 8px; border-top: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+  .activity { color: GrayText; padding-inline-start: 24px; margin: 8px 0; font-size: 12px; }
+  details { margin-top: 10px; overflow-wrap: anywhere; }
+  summary { cursor: pointer; font-weight: 600; }
+  .topic-button { min-height: 24px; padding: 0 6px; }
+  #notice { margin: 8px 0; color: GrayText; }
+</style>
+<header>
+  <h1>Claude ↔ Codex</h1>
+  <small>Recent local exchanges</small>
+</header>
+<form id="filter">
+  <label for="task">Task ID</label>
+  <input id="task" placeholder="All tasks" maxlength="64" pattern="[A-Za-z0-9_-]{1,64}">
+  <button type="submit">Refresh</button>
+</form>
+<p id="notice" role="status">Connecting to the bridge…</p>
+<section id="checkpoint" aria-label="Topic checkpoint"></section>
+<main id="list" aria-label="Recent questions and replies"></main>
+<script>
+  const taskInput = document.querySelector("#task");
+  const notice = document.querySelector("#notice");
+  const list = document.querySelector("#list");
+  const checkpoint = document.querySelector("#checkpoint");
+  const localKey = window.parent === window && location.hostname === "127.0.0.1"
+    ? location.hash.slice(1) : "";
+  const pending = new Map();
+  let requestId = 0;
+  let task = null;
+  let ready = false;
+  let refreshing = false;
+  let previous = "";
+
+  function send(method, params, id) {
+    const message = { jsonrpc: "2.0", method, params };
+    if (id !== undefined) message.id = id;
+    window.parent.postMessage(message, "*");
+  }
+
+  function request(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++requestId;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("The bridge did not respond."));
+      }, 10000);
+      pending.set(id, { resolve, reject, timer });
+      send(method, params, id);
+    });
+  }
+
+  function element(tag, value, className) {
+    const item = document.createElement(tag);
+    item.textContent = value;
+    if (className) item.className = className;
+    return item;
+  }
+
+  // Render the mailbox's Markdown subset with DOM nodes so transcripts cannot inject HTML.
+  function appendInline(parent, source, depth = 0) {
+    if (depth >= 8) {
+      parent.append(source);
+      return;
+    }
+    const pattern = new RegExp([
+      /\\([\\`*_~\[\]])/,
+      /(?<!`)(`+)(?!`)([^\n]+?)(?<!`)\2(?!`)/,
+      /(?<!\*)\*\*\*(?=\S)([^\n]+?)(?<=\S)\*\*\*(?!\*)/,
+      /(?<!\*)\*\*(?=\S)([^\n]+?)(?<=\S)\*\*(?!\*)/,
+      /(?<!\w)__(?=\S)([^\n]+?)(?<=\S)__(?!\w)/,
+      /(?<!\*)\*(?!\*)(?=\S)([^\n]+?)(?<=\S)\*(?!\*)/,
+      /(?<!\w)_(?!_)(?=\S)([^\n]+?)(?<=\S)_(?!\w)/,
+      /~~(?=\S)([^\n]+?)(?<=\S)~~/,
+    ].map(rule => rule.source).join("|"), "g");
+    let end = 0;
+    for (const match of source.matchAll(pattern)) {
+      parent.append(source.slice(end, match.index));
+      const [, escaped, ticks, code, both, strong, bold, emphasis, italic, strike] = match;
+      if (escaped) parent.append(escaped);
+      else if (ticks) parent.append(element("code", code.replace(/^ (.*\S.*) $/, "$1")));
+      else {
+        const tag = both || strong || bold ? "strong" : strike ? "del" : "em";
+        const inline = document.createElement(tag);
+        const content = both ? document.createElement("em") : inline;
+        appendInline(content, both ?? strong ?? bold ?? emphasis ?? italic ?? strike, depth + 1);
+        if (both) inline.append(content);
+        parent.append(inline);
+      }
+      end = match.index + match[0].length;
+    }
+    parent.append(source.slice(end));
+  }
+
+  const headingLine = /^ {0,3}(#{1,6})[ \t]+(.+)$/;
+  const listLine = /^( {0,3})([-+*]|\d{1,9}[.)])([ \t]+)(.*)$/;
+  const quoteLine = /^ {0,3}> ?/;
+  const fenceLine = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+  const ruleLine = /^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
+
+  function appendBlocks(parent, lines, depth = 0) {
+    if (depth >= 12) {
+      parent.append(element("p", lines.join("\n")));
+      return;
+    }
+    const blockStart = line => [headingLine, listLine, quoteLine, fenceLine, ruleLine].some(rule => rule.test(line));
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i++];
+      if (!line.trim()) continue;
+      const fence = line.match(fenceLine);
+      const heading = line.match(headingLine);
+      const bullet = line.match(listLine);
+      if (fence) {
+        const close = new RegExp(`^ {0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*$`);
+        const code = [];
+        while (i < lines.length && !close.test(lines[i])) code.push(lines[i++]);
+        if (i < lines.length) i++;
+        const pre = document.createElement("pre");
+        pre.append(element("code", code.join("\n")));
+        parent.append(pre);
+      } else if (heading) {
+        const title = document.createElement("h" + Math.min(6, heading[1].length + 2));
+        appendInline(title, heading[2].replace(/[ \t]+#+[ \t]*$/, "").trimEnd());
+        parent.append(title);
+      } else if (ruleLine.test(line)) {
+        parent.append(document.createElement("hr"));
+      } else if (quoteLine.test(line)) {
+        const quote = document.createElement("blockquote");
+        const body = [line.replace(quoteLine, "")];
+        while (i < lines.length && quoteLine.test(lines[i])) body.push(lines[i++].replace(quoteLine, ""));
+        appendBlocks(quote, body, depth + 1);
+        parent.append(quote);
+      } else if (bullet) {
+        const ordered = /^\d/.test(bullet[2]);
+        const items = document.createElement(ordered ? "ol" : "ul");
+        if (ordered) items.start = parseInt(bullet[2], 10);
+        let item = bullet;
+        while (item) {
+          const indent = item[1].length + item[2].length + item[3].length;
+          const body = [item[4]];
+          while (i < lines.length) {
+            if (!lines[i].trim()) {
+              body.push("");
+              i++;
+            } else if (lines[i].search(/\S/) >= indent) body.push(lines[i++].slice(indent));
+            else break;
+          }
+          const li = document.createElement("li");
+          appendBlocks(li, body, depth + 1);
+          items.append(li);
+          item = !ruleLine.test(lines[i] || "") && lines[i]?.match(listLine);
+          if (!item || item[1] !== bullet[1] || /^\d/.test(item[2]) !== ordered) break;
+          i++;
+        }
+        parent.append(items);
+      } else {
+        const body = [line];
+        while (i < lines.length && lines[i].trim() && !blockStart(lines[i])) body.push(lines[i++]);
+        const paragraph = document.createElement("p");
+        appendInline(paragraph, body.join("\n"));
+        parent.append(paragraph);
+      }
+    }
+  }
+
+  function markdown(source) {
+    const content = document.createElement("div");
+    content.className = "markdown";
+    appendBlocks(content, (source || "").split(/\r\n?|\n/));
+    return content;
+  }
+
+  function timeLabel(stamp) {
+    const date = new Date(stamp);
+    return Number.isNaN(date.valueOf()) ? stamp : date.toLocaleString();
+  }
+
+  async function loadConversation(args) {
+    if (!localKey) return request("tools/call", { name: "refresh_conversation", arguments: args });
+    const response = await fetch("/api/conversation?" + new URLSearchParams(args), {
+      headers: { Authorization: "Bearer " + localKey },
+      credentials: "omit",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error("Could not load local conversation data.");
+    return response.json();
+  }
+
+  function requestDetails(id, open) {
+    const details = document.createElement("details");
+    details.dataset.request = id;
+    const body = document.createElement("div");
+    details.append(element("summary", "Shared context and diagnostics"), body);
+    details.addEventListener("toggle", async () => {
+      if (!details.open) return;
+      body.replaceChildren(element("p", "Loading…"));
+      try {
+        const result = await loadConversation({ request_id: id });
+        const data = result?._meta?.request;
+        if (!data) throw new Error("Request details unavailable.");
+        body.replaceChildren();
+        for (const [key, label] of [["question", "Full question"], ["context", "Shared context"],
+          ["shared_history", "Earlier exchanges included"], ["shared_checkpoint", "Checkpoint included"],
+          ["error_detail", "Technical details"]]) {
+          if (data[key]) body.append(element("strong", label), element("p", data[key]));
+        }
+      } catch (error) {
+        body.replaceChildren(element("p", error.message));
+      }
+    });
+    details.open = open;
+    return details;
+  }
+
+  function render(result, useResultFilter = false) {
+    const view = result?._meta?.conversation;
+    if (!view || !Array.isArray(view.exchanges)) return false;
+    if (useResultFilter) task = view.task_id;
+    if (document.activeElement !== taskInput) taskInput.value = task || "";
+    notice.textContent = view.exchanges.length ? "" : "No exchanges in this view yet.";
+    const signature = JSON.stringify(view);
+    if (signature === previous) return true;
+    previous = signature;
+    const openRequests = new Set([...list.querySelectorAll("details[open]")].map(node => node.dataset.request));
+    checkpoint.replaceChildren();
+    if (view.checkpoint) {
+      const notes = document.createElement("details");
+      notes.append(element("summary", "Decisions and open questions"), element("p", view.checkpoint.summary));
+      checkpoint.append(notes);
+    }
+    const cards = (task ? [...view.exchanges].reverse() : view.exchanges).map(exchange => {
+      const card = document.createElement("article");
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      const topic = element("button", exchange.topic || exchange.task, "topic-button");
+      topic.type = "button";
+      topic.title = "Show topic " + exchange.task;
+      topic.addEventListener("click", () => { task = exchange.task; refresh(); });
+      meta.append(element("span", exchange.status, "status"),
+        element("span", timeLabel(exchange.time)), topic,
+        element("span", exchange.mode === "manual" ? "Manual" : "Automatic"),
+        element("span", exchange.continuity));
+      card.append(element("h2", exchange.from + " → " + exchange.to),
+        meta, markdown(exchange.question));
+      if (exchange.events?.length) {
+        const activity = document.createElement("ol");
+        activity.className = "activity";
+        activity.setAttribute("aria-label", "Bridge activity");
+        for (const event of exchange.events) {
+          activity.append(element("li", timeLabel(event.time) + " · " + event.message));
+        }
+        card.append(activity);
+      }
+      if (exchange.answer || exchange.error) {
+        const reply = document.createElement("div");
+        reply.className = "reply";
+        reply.append(element("strong", exchange.answer ? "Reply" : "Details"),
+          exchange.answer ? markdown(exchange.answer) : element("p", exchange.error));
+        card.append(reply);
+      }
+      card.append(requestDetails(exchange.id, openRequests.has(exchange.id)));
+      return card;
+    });
+    list.replaceChildren(...cards);
+    return true;
+  }
+
+  window.addEventListener("message", event => {
+    if (event.source !== window.parent || event.data?.jsonrpc !== "2.0") return;
+    const message = event.data;
+    const callback = pending.get(message.id);
+    if (callback) {
+      pending.delete(message.id);
+      clearTimeout(callback.timer);
+      if (message.error) callback.reject(new Error(message.error.message));
+      else callback.resolve(message.result);
+    } else if (message.method === "ui/notifications/tool-result") {
+      render(message.params, true);
+    }
+  });
+
+  async function refresh() {
+    if (!ready || refreshing) return;
+    refreshing = true;
+    const requestedTask = task;
+    try {
+      const args = requestedTask ? { task_id: requestedTask } : {};
+      const result = await loadConversation(args);
+      if (requestedTask === task && !render(result)) {
+        throw new Error(result.content?.[0]?.text || "Conversation data unavailable.");
+      }
+    } catch (error) {
+      notice.textContent = error.message;
+    } finally {
+      refreshing = false;
+      if (requestedTask !== task) refresh();
+    }
+  }
+
+  document.querySelector("#filter").addEventListener("submit", event => {
+    event.preventDefault();
+    task = taskInput.value.trim() || null;
+    refresh();
+  });
+
+  async function start() {
+    try {
+      if (!localKey) {
+        await request("ui/initialize", {
+          appInfo: { name: "claude-bridge", version: "1.0.0" },
+          appCapabilities: {},
+          protocolVersion: "2026-01-26",
+        });
+        send("ui/notifications/initialized", {});
+      }
+      ready = true;
+      await refresh();
+      setInterval(() => { if (!document.hidden) refresh(); }, 3000);
+    } catch (error) {
+      notice.textContent = error.message;
+    }
+  }
+
+  let height = 0;
+  new ResizeObserver(() => {
+    const next = Math.ceil(document.body.getBoundingClientRect().height);
+    if (!localKey && ready && next !== height) {
+      height = next;
+      send("ui/notifications/size-changed", { height });
+    }
+  }).observe(document.body);
+  start();
+</script>

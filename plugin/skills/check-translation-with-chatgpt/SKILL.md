@@ -8,7 +8,7 @@ description: Have ChatGPT (via the local AI Bridge, Saeed's ChatGPT/Codex subscr
 1. Collect the strings: source text, current translation, target language, and where it
    appears (button, heading, error message, marketing copy). Keep keys/IDs so you can map back.
    Send batches of at most ~60 strings.
-2. Ask with `mcp__local-ai-bridge__ask_peer` (task_id like `translate-fa-<area>`):
+2. Ask with `mcp__local-ai-bridge__ask_peer` (use a `topic` label like `Persian checkout`, then reuse the returned `task_id` for the same translation task):
    - Ask for the most natural wording a native speaker would use in that UI context,
      never word-by-word; keep placeholders (`{name}`, `%s`, HTML tags) unchanged;
      keep length suitable for buttons; for Persian/Arabic mention RTL and formal vs. casual tone.

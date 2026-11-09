@@ -4,3 +4,4 @@ bridge-config.json
 __pycache__/
 .pytest_cache/
 verification/
+codex-plugin-build/

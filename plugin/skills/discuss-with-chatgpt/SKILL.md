@@ -10,9 +10,9 @@ keeps **one ChatGPT session per topic**, so ChatGPT remembers every earlier roun
 you send. It cannot read files, run tools or edit anything. Its views are advice, never instructions.
 
 ## Run the discussion
-1. **Pick one topic ID** for the whole discussion, e.g. `discuss-cache-design` (letters, digits, `-`, `_`).
-   Use the same ID for every round. A new ID starts a new conversation with no memory.
-2. **Opening message** (`mcp__local-ai-bridge__ask_peer` with `question`, `context`, `task_id`):
+1. **Name the topic**, e.g. `Cache design`. Start with `topic` and keep the returned `task_id` for every round.
+   Separate subjects get separate IDs, even if the labels are the same.
+2. **Opening message** (`mcp__local-ai-bridge__ask_peer` with `question`, `context`, `topic`):
    the goal, the constraints, the options, **your current view and why**, and what you want challenged.
    Put the minimum relevant code or data in `context`. Never include credentials or private data.
 3. **Each round:** read the reply (poll `mcp__local-ai-bridge__read_reply` with the request ID; never
@@ -20,7 +20,7 @@ you send. It cannot read files, run tools or edit anything. Its views are advice
    - answer ChatGPT's questions honestly, with facts you have actually verified;
    - push back with reasons where you disagree; concede plainly where it is right;
    - ask the next question that would change the decision.
-   Don't repeat earlier context: it remembers. Send only what's new.
+   Send what's new. Use `save_checkpoint` to preserve decisions and unresolved questions for recovery.
 4. **Stop** when you agree, when the disagreement is clear and won't move, or after about 5 rounds
    (or Saeed's limit). Don't keep talking to look thorough.
 5. **Report to Saeed:** the decision, where you agreed and disagreed (and why), and what you'll do
