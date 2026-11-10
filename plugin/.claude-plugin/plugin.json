@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shows the Claude ↔ ChatGPT conversation from the local AI Bridge in a side panel, with skills for asking ChatGPT and checking translations.",
   "types": "./types/index.d.ts"
 }
