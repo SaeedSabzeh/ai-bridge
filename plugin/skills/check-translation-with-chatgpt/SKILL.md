@@ -1,6 +1,6 @@
 ---
 name: check-translation-with-chatgpt
-description: Have ChatGPT (via the local AI Bridge, Saeed's ChatGPT/Codex subscription, no API key) review translated text — Arabic, Persian, English, Italian or any language — so it reads naturally to a native speaker, then apply the good suggestions. Use when Saeed asks to check, review or improve a translation "with ChatGPT" through the bridge or subscription. If Saeed asks to use his OpenAI API key instead, use the translation-review skill.
+description: Have ChatGPT (via the local AI Bridge, Saeed's ChatGPT/Codex subscription, no API key) review translated text — Arabic, Persian, English, Italian or any language — so it reads naturally to a native speaker, then apply the good suggestions. Use when Saeed asks to check, review or improve a translation "with ChatGPT" through the bridge or subscription, and on your own before finishing user-facing text you wrote or changed in Arabic, Persian, Italian or another language Saeed does not write in himself. If Saeed asks to use his OpenAI API key instead, use the translation-review skill.
 ---
 
 # Check a translation with ChatGPT

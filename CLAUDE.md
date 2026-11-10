@@ -3,6 +3,7 @@
 Saeed authorized Claude Code and ChatGPT Work/Codex to exchange questions and relevant context through this local bridge.
 Use it for a material second opinion on difficult bugs, design choices, ambiguous reasoning, translation checks, or a requested peer review.
 Consult the peer when it could materially improve the work, including repeated discussions during a longer task.
+Ask without being asked before a commit or PR with non-trivial logic changes (send the diff for a bug review), when a bug is still unfixed after two attempts, before a hard-to-undo decision (data format, architecture, new dependency), for user-facing translations, and before claiming an experiment result improved. Skip simple edits and quick questions.
 When Saeed asks for coaching, follow the **Coach each other** workflow in the bridge README. Either assistant can lead on a task.
 
 From the bridge folder, run `python ai_bridge.py`.

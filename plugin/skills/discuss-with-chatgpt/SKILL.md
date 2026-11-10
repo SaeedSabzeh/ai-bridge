@@ -1,6 +1,6 @@
 ---
 name: discuss-with-chatgpt
-description: Hold a real multi-round discussion with ChatGPT (through the local AI Bridge and Saeed's ChatGPT/Codex subscription), not just one question and answer. ChatGPT remembers the whole topic, pushes back and asks questions; Claude answers, challenges or concedes, and reports the outcome. Use when Saeed says "discuss with ChatGPT", "talk it through with ChatGPT", "debate this with ChatGPT", "go back and forth with ChatGPT", or when a hard decision deserves more than one opinion. For a single quick question use ask-chatgpt.
+description: Hold a real multi-round discussion with ChatGPT (through the local AI Bridge and Saeed's ChatGPT/Codex subscription), not just one question and answer. ChatGPT remembers the whole topic, pushes back and asks questions; Claude answers, challenges or concedes, and reports the outcome. Use when Saeed says "discuss with ChatGPT", "talk it through with ChatGPT", "debate this with ChatGPT", "go back and forth with ChatGPT", or on your own when a hard-to-undo decision (data format, architecture, a new dependency) deserves more than one round. For a single quick question use ask-chatgpt.
 ---
 
 # Discuss with ChatGPT

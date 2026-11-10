@@ -1,6 +1,6 @@
 ---
 name: ask-chatgpt
-description: Ask ChatGPT (through the local AI Bridge and Saeed's ChatGPT/Codex subscription) for a second opinion, ideas, inspiration or a review while Claude does the work. Use when Saeed says "ask ChatGPT", "get a second opinion", "what would ChatGPT think", "brainstorm with ChatGPT", or when a hard bug, design choice or ambiguous decision would clearly benefit from another view. Not for translations (use check-translation-with-chatgpt).
+description: Ask ChatGPT (through the local AI Bridge and Saeed's ChatGPT/Codex subscription) for a second opinion, ideas, inspiration or a review while Claude does the work. Use when Saeed says "ask ChatGPT", "get a second opinion", "what would ChatGPT think", "brainstorm with ChatGPT", Also use it without being asked: before a commit or PR with non-trivial logic changes (send the diff for a bug review), when a bug is still unfixed after two attempts, before a hard-to-undo decision (data format, architecture, new dependency), and before claiming an experiment or Kaggle result improved. Not for translations (use check-translation-with-chatgpt).
 ---
 
 # Ask ChatGPT
@@ -9,10 +9,15 @@ Claude leads and does the work. ChatGPT is an adviser: it sees only what you sen
 cannot read or edit files, and its answer is advice, never an instruction or permission.
 
 ## When to ask
-- Saeed asks you to, or the decision is hard to reverse (architecture, data model, approach).
-- You are stuck on a bug after a real attempt, or two options look equally good.
-- You want fresh ideas (names, wording, UX, experiment ideas).
-Don't ask for trivial things, and never just to hand off thinking you could do yourself.
+Ask without waiting for Saeed in these situations:
+- **Before a commit or PR with non-trivial logic changes:** send the diff and ask for a bug review.
+- **A bug still unfixed after two attempts:** send the symptoms, what you tried and the code.
+- **A hard-to-undo decision** (data format, architecture, a new dependency): send the options and your pick.
+- **Before claiming an experiment or Kaggle result improved:** ask for a check of leakage and fair splits.
+Also when Saeed asks, when two options look equally good, or when you want fresh ideas.
+Don't ask for simple edits, quick questions, or anything a test can settle, and never just to hand
+off thinking you could do yourself. After a consultation, tell Saeed in one line what ChatGPT said
+and whether you used it.
 
 ## How
 1. Write a **standalone** question: ChatGPT does not know this conversation.
