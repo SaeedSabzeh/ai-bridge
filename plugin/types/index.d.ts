@@ -10,6 +10,10 @@ export type Exchange = {
   question: string
   answer: string
   error: string
+  topic: string
+  errorCode: string
+  continuity: string
+  workspace: string
 }
 
 declare module 'claude-code' {

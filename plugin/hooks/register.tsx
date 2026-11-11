@@ -41,7 +41,7 @@ const TITLE = 'Claude ↔ ChatGPT'
 const NAMES: Record<string, string> = { claude: 'Claude', chatgpt: 'ChatGPT', user: 'You' }
 const STEP = 6
 
-const exchanges = atom({ plugin: 'chatgpt-bridge', key: 'exchanges' } as const, [], { shape: 'exchanges-2' })
+const exchanges = atom({ plugin: 'chatgpt-bridge', key: 'exchanges' } as const, [], { shape: 'exchanges-3' })
 const shown = atom({ plugin: 'chatgpt-bridge', key: 'shown' } as const, STEP, { shape: 'shown-1' })
 const problem = atom({ plugin: 'chatgpt-bridge', key: 'problem' } as const, '', { shape: 'problem-1' })
 
@@ -89,6 +89,7 @@ function parse(raw: string): Exchange | undefined {
     id: data.id, mode: text(data.mode), from: text(data.sender), to: text(data.recipient), task: text(data.task_id),
     status: text(data.status), created: text(data.created_at), updated: text(data.updated_at),
     question: text(data.question), answer: text(data.answer), error: text(data.error),
+    topic: text(data.topic), errorCode: text(data.error_code), continuity: text(data.continuity), workspace: text(data.workspace),
   }
 }
 
@@ -217,6 +218,15 @@ export const register: Register = on => {
       seen.set(item.task, n)
       rounds.set(item.id, n)
     }
+    // First topic label seen for each task, so follow-ups without a label still read well.
+    const topics = new Map<string, string>()
+    for (const item of list) if (item.topic && item.task && !topics.has(item.task)) topics.set(item.task, item.topic)
+    const label = (item: Exchange) => {
+      if (item.topic) return item.topic
+      const known = topics.get(item.task)
+      if (known) return known
+      return item.task && !/^[0-9a-f]{32}$/.test(item.task) ? item.task : ''
+    }
 
     return (
       <Box flexDirection="column" gap={1}>
@@ -242,8 +252,10 @@ export const register: Register = on => {
               </Box>
               <Text dimColor>
                 {when(item.created)}
-                {item.task ? `  ·  ${item.task}` : ''}
+                {label(item) ? `  ·  ${label(item)}` : ''}
                 {item.task && round > 1 ? `  ·  round ${round}` : ''}
+                {item.continuity === 'resumed' || item.continuity === 'recovered' ? `  ·  ${item.continuity} session` : ''}
+                {item.workspace ? `  ·  can read ${item.workspace.split(/[\\/]/).filter(Boolean).pop() ?? item.workspace}` : ''}
               </Text>
               <Markdown text={clip(item.question, 1500)} />
               {item.answer ? (
