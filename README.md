@@ -112,8 +112,10 @@ Either Claude or Codex can lead. The lead owns edits and verification, and the c
 | `timeout_seconds` | 300 | Longest one answer may take (10 to 1800). Raise it if reviews of large changes time out. |
 | `peer_tools` | true | Let the peer read files and look things up, read-only. |
 | `web_search` | true | Let Codex search the web. |
-| `codex_model`, `claude_model` | null | Model for each peer. `null` uses that CLI's default. |
-| `codex_effort`, `claude_effort` | null | Reasoning effort, e.g. `"high"`. `null` uses the default. |
+| `codex_model` | `"gpt-6.2-sol"` | Model Codex answers with. `null` uses the Codex CLI's default. |
+| `codex_effort` | `"xhigh"` | Codex reasoning effort. `null` uses the default. |
+| `claude_model` | null | Model Claude answers with. `null` uses the Claude CLI's default. |
+| `claude_effort` | null | Claude reasoning effort, e.g. `"high"`. `null` uses the default. |
 | `codex_windows_sandbox` | null | `"elevated"` or `"unelevated"`. `null` follows your own Codex setting. |
 | `claude_path`, `codex_path` | null | Where a CLI is, if it is not found automatically. |
 
