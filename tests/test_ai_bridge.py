@@ -688,6 +688,136 @@ bridge.Mailbox(base, bridge.config_for(base), runner=bridge.cli_reply, external_
         self.assertIn('Note for ChatGPT', (self.base / 'AGENTS.md').read_text(encoding='utf-8'))
         self.assertEqual(readme.read_bytes(), before)
 
+    # Image requests. Codex is replaced by a fake run that leaves a picture where Codex's image tool would.
+    THREAD = '01a1ff29-4272-7870-8495-cd1070e8839e'
+
+    def image_setup(self, caption='A blue square.', make_image=True, during_run=None):
+        project = self.base / 'project'
+        project.mkdir(exist_ok=True)
+        home = self.base / 'codex-home'
+        folder = home / 'generated_images' / self.THREAD
+        folder.mkdir(parents=True, exist_ok=True)
+        runs = []
+
+        def run(command, cwd, timeout, prompt=None, env=None):
+            if command[-1] == '-':
+                runs.append((command, cwd, prompt))
+                if make_image:
+                    (folder / 'exec-1.png').write_bytes(b'\x89PNG fake')
+                if during_run:
+                    during_run()
+                events = [{'type': 'thread.started', 'thread_id': self.THREAD}, {'type': 'turn.started'}]
+                if caption:
+                    events.append({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': caption}})
+                events.append({'type': 'turn.completed'})
+                return 0, '\n'.join(map(json.dumps, events)), ''
+            return 0, '', ''
+
+        patches = [patch.object(b, 'executable_for', return_value=['codex']), patch.object(b, 'ready'),
+                   patch.object(b, 'run_process', side_effect=run), patch.dict(os.environ, {'CODEX_HOME': str(home)})]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return project, runs
+
+    def test_image_request_saves_a_new_file_through_codex_image_tool(self):
+        project, runs = self.image_setup()
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'A blue square on white', 'save_to': 'art/square.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'answered', item)
+        self.assertEqual(item['kind'], 'image')
+        saved = project / 'art' / 'square.png'
+        self.assertEqual(Path(item['image_path']), saved)
+        self.assertEqual(saved.read_bytes(), b'\x89PNG fake')
+        self.assertIn('A blue square.', item['answer'])
+        self.assertIn(str(saved), item['answer'])
+        command, cwd, prompt = runs[0]
+        self.assertIn('features.image_generation=true', command)
+        self.assertIn('features.shell_tool=false', command)
+        self.assertIn('--ephemeral', command)
+        self.assertNotEqual(Path(cwd).resolve(), project.resolve())
+        self.assertTrue(prompt.startswith(b.IMAGE_RULES))
+        self.assertTrue(prompt.endswith('A blue square on white'))
+        # A retry of the same request returns it instead of refusing the file it created.
+        record = b.read_json(self.base / 'data/requests' / (item['id'] + '.json'))
+        again = b.api(self.base, '/api/requests', {key: record[key] for key in
+                      ('id', 'sender', 'recipient', 'kind', 'question', 'save_to', 'workspace')})
+        self.assertEqual(again['status'], 'answered')
+        with self.assertRaises(b.BridgeError):
+            b.api(self.base, '/api/requests', {key: record[key] for key in ('id', 'sender', 'recipient', 'question', 'workspace')})
+        self.assertEqual(len(runs), 1)
+
+    def test_image_never_replaces_a_file_and_takes_the_real_file_type(self):
+        project, _ = self.image_setup(caption='')
+        (project / 'pic.png').write_bytes(b'keep me')
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'A cat', 'save_to': 'pic.jpg', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'answered', item)
+        self.assertEqual(Path(item['image_path']), project / 'pic-2.png')
+        self.assertEqual((project / 'pic.png').read_bytes(), b'keep me')
+        self.assertTrue(item['answer'].startswith('Saved the image to'))
+        self.assertEqual(sorted(path.name for path in project.iterdir()), ['pic-2.png', 'pic.png'])  # No temporary file left.
+
+    def test_image_request_rules(self):
+        project, runs = self.image_setup()
+        (project / 'taken.png').write_bytes(b'x')
+        self.assertIn('generate_image', [tool['name'] for tool in b.mcp_tools('claude')])
+        self.assertNotIn('generate_image', [tool['name'] for tool in b.mcp_tools('chatgpt')])
+        with self.assertRaises(b.BridgeError):
+            b.mcp_call(self.base, 'chatgpt', 'generate_image', {'prompt': 'x', 'save_to': 'a.png'}, str(project))
+        for save_to in ('../outside.png', str(self.base / 'outside.png'), 'picture.gif', 'taken.png', 'folder/',
+                        'taken.png:hidden.png', 'sub:dir/a.png'):
+            with self.subTest(save_to=save_to), self.assertRaises(b.BridgeError):
+                b.mcp_call(self.base, 'claude', 'generate_image', {'prompt': 'x', 'save_to': save_to}, str(project))
+        with self.assertRaises(b.BridgeError):
+            b.mcp_call(self.base, 'claude', 'generate_image', {'prompt': 'x', 'save_to': 'a.png'}, None)
+        image = dict(sender='claude', recipient='chatgpt', kind='image', question='x', save_to='a.png', workspace=str(project))
+        for change in ({'mode': 'manual'}, {'context': 'extra'}, {'task_id': 'topic'}, {'sender': 'user'}, {'kind': 'video'}):
+            with self.subTest(change=change), self.assertRaises(b.BridgeError):
+                b.api(self.base, '/api/requests', {**image, **change})
+        with patch.dict(os.environ, {'AI_BRIDGE_WORKER': '1'}), self.assertRaises(b.BridgeError):
+            b.mcp_call(self.base, 'claude', 'generate_image', {'prompt': 'x', 'save_to': 'a.png'}, str(project))
+        self.assertEqual(runs, [])
+
+    def test_image_failures_are_reported_and_save_nothing(self):
+        project, _ = self.image_setup(caption='I cannot draw that.', make_image=False)
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'Something', 'save_to': 'none.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'failed')
+        self.assertEqual(item['error_code'], 'no_image')
+        self.assertIn('I cannot draw that.', item['error'])
+        self.assertFalse((project / 'none.png').exists())
+
+    def test_image_is_not_saved_when_the_request_stopped_meanwhile(self):
+        def give_up():
+            path = next((self.base / 'data/requests').glob('*.json'))
+            record = b.read_json(path)
+            record.update(status='failed', error='Deadline passed')
+            b.atomic_json(path, record)
+        project, _ = self.image_setup(during_run=give_up)
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'Late', 'save_to': 'late.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'failed')
+        time.sleep(.2)  # Let the worker finish after the record already failed.
+        self.assertFalse((project / 'late.png').exists())
+        self.assertNotIn('image_path', b.api(self.base, '/api/requests/' + item['id']))
+
+    @unittest.skipUnless(os.name == 'nt', 'Directory junctions are a Windows feature')
+    def test_image_is_not_saved_when_the_workspace_was_swapped_for_a_link(self):
+        import _winapi
+        elsewhere = self.base / 'elsewhere'
+        elsewhere.mkdir()
+
+        def swap():
+            (self.base / 'project').rename(self.base / 'project-old')
+            _winapi.CreateJunction(str(elsewhere), str(self.base / 'project'))
+        project, _ = self.image_setup(during_run=swap)
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'Swapped', 'save_to': 'swap.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'failed', item)
+        self.assertEqual(item['error_code'], 'save_failed')
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

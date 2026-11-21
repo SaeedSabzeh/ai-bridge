@@ -40,13 +40,14 @@ CLAUDE_TOOLS = ["--tools", CLAUDE_READ_TOOLS, "--allowedTools", CLAUDE_READ_TOOL
 
 
 def command_args(peer, session=None, keep=True, *, tools=False, model=None, effort=None,
-                 windows_sandbox=None, web_search=False):
+                 windows_sandbox=None, web_search=False, images=False):
     """CLI arguments (after the executable) for a new session, or for resuming `session`.
 
     keep=False makes a one-off session the CLI does not save (a question with no task).
     tools=True lets the peer look things up without changing anything: Codex gets its shell inside
     the read-only sandbox (plus web search when asked), Claude gets its file-reading tools.
     On Windows, Codex rejects every command unless told which sandbox to use (`windows_sandbox`).
+    images=True (Codex only) turns its image tool on for an image request; otherwise it is turned off.
     """
     if session is not None and not SESSION_RE.match(session):
         raise ValueError("Invalid session ID.")
@@ -62,6 +63,8 @@ def command_args(peer, session=None, keep=True, *, tools=False, model=None, effo
                 settings += ["-c", 'web_search="live"']
         else:
             settings += CODEX_NO_TOOLS
+        # Explicit both ways: an ordinary question must not be able to make a picture even if asked to.
+        settings += ["-c", f"features.image_generation={'true' if images else 'false'}"]
         if effort:
             settings += ["-c", f'model_reasoning_effort="{effort}"']
         chosen = ["--model", model] if model else []

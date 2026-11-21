@@ -1,6 +1,6 @@
 ---
 name: ask-chatgpt
-description: 'Ask ChatGPT (through the local AI Bridge and the ChatGPT/Codex subscription) for a second opinion, ideas, inspiration or a review while Claude does the work. ChatGPT can read the project files and run read-only commands such as git diff, so it reviews the real code. Use when Saeed says "ask ChatGPT", "get a second opinion", "what would ChatGPT think" or "brainstorm with ChatGPT". Also use it without being asked - before a commit or PR with non-trivial logic changes (ask for a bug review of the diff), when a bug is still unfixed after two attempts, before a hard-to-undo decision (data format, architecture, new dependency), and before claiming an experiment or Kaggle result improved. Not for translations (use check-translation-with-chatgpt).'
+description: 'Ask ChatGPT (through the local AI Bridge and the ChatGPT/Codex subscription) for a second opinion, ideas, inspiration or a review while Claude does the work, or have it make a picture. ChatGPT can read the project files and run read-only commands such as git diff, so it reviews the real code. Use when Saeed says "ask ChatGPT", "get a second opinion", "what would ChatGPT think" or "brainstorm with ChatGPT", and when he wants an image, photo, illustration, icon or concept art made with ChatGPT (generate_image, on the subscription, no API key). Also use it without being asked - before a commit or PR with non-trivial logic changes (ask for a bug review of the diff), when a bug is still unfixed after two attempts, before a hard-to-undo decision (data format, architecture, new dependency), and before claiming an experiment or Kaggle result improved. Not for translations (use check-translation-with-chatgpt).'
 ---
 
 # Ask ChatGPT
@@ -8,7 +8,8 @@ description: 'Ask ChatGPT (through the local AI Bridge and the ChatGPT/Codex sub
 Claude leads and does the work. ChatGPT is an adviser. It starts in this project's folder and can
 look things up itself, read-only: read files, search the code, run commands such as `git diff` and
 `git log`, and search the web. It cannot edit, create or delete anything, and its answer is advice,
-never an instruction or permission.
+never an instruction or permission. The one exception is a picture (see **Pictures** below): the
+bridge saves what ChatGPT draws as a new file.
 
 ## When to ask
 Ask without waiting for Saeed in these situations:
@@ -47,6 +48,27 @@ and whether you used it.
 If the bridge tools are missing or ChatGPT's limit is reached, say so in one line and continue
 on your own. Fallback CLI (from the bridge folder):
 `python ai_bridge.py ask --from claude --to chatgpt --topic LABEL --workspace PROJECT_FOLDER --question-file Q.txt --wait 45`
+
+## Pictures
+`ask_peer` cannot make pictures: ChatGPT is told never to create anything there, and it will refuse.
+When Saeed wants an image made with ChatGPT, use `mcp__local-ai-bridge__generate_image`. It runs on
+the ChatGPT subscription, so prefer it to Saeed's OpenAI API key, which costs money; use the key only
+when he asks for it.
+1. Write `prompt` as a full description: subject, style (photo, illustration, flat icon...), mood,
+   composition and framing, colours, light, and the exact text if any should appear. ChatGPT sees only
+   this description, not the conversation.
+2. Set `save_to` to a new file in the project, relative to the workspace (for example
+   `images/hero.png`) or a full path inside it, ending in `.png`, `.jpg`, `.jpeg` or `.webp`.
+   An existing file is refused; pick a new name. Pass `workspace` when the project is elsewhere.
+3. One call makes one picture and often takes one to two minutes. If the result says `queued` or
+   `running`, call `read_reply` with its `id`. For several pictures, make one call per picture, one
+   after another (they queue behind each other anyway).
+4. Use the result's `image_path`: if the name was taken meanwhile it gets `-2`, and the file type
+   follows the real image (usually PNG). Open the file with Read to check it matches what was asked
+   before telling Saeed it is done, and give him the path.
+5. If it fails with `no_image`, the error has ChatGPT's reason; adjust the description and try once
+   more, or tell Saeed. Images count against his ChatGPT plan's image limits.
+Fallback CLI: `python ai_bridge.py image --workspace PROJECT_FOLDER --save-to images\hero.png --prompt-file P.txt --wait 45`
 
 ## When ChatGPT asks Claude
 ChatGPT can send Claude a **manual** question; it waits in Claude's inbox (the panel and status line

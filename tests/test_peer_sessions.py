@@ -86,6 +86,12 @@ class PeerSessionsTest(unittest.TestCase):
         for forbidden in ("Bash", "Edit", "Write", "WebFetch"):
             self.assertNotIn(forbidden, " ".join(claude))
 
+    def test_image_tool_is_turned_on_only_for_image_requests(self):
+        self.assertIn("features.image_generation=true", ps.command_args("chatgpt", keep=False, images=True))
+        for args in (ps.command_args("chatgpt", keep=False), ps.command_args("chatgpt", "5d0c1f9e-1111-4222-8333-944455556666", tools=True)):
+            self.assertIn("features.image_generation=false", args)
+            self.assertNotIn("features.image_generation=true", args)
+
     def test_model_and_effort_are_passed_and_checked(self):
         codex = ps.command_args("chatgpt", model="gpt-example", effort="high")
         self.assertEqual(codex[codex.index("--model") + 1], "gpt-example")

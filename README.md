@@ -5,7 +5,8 @@ second opinions and translation checks. Messages are plain JSON files under `dat
 Each assistant answers through its own subscription CLI; no API keys are used.
 The assistant that answers can look things up before it replies, read-only: it reads files in the
 asker's project folder, and Codex can also run read-only commands (`git diff`, searches) and search the web.
-It can never edit, create or delete anything.
+It can never edit, create or delete anything. The one exception is a picture: Claude's `generate_image`
+has ChatGPT make an image, and the bridge saves it as a new file (see below).
 The `plugin/` folder is a Claude Code plugin (`chatgpt-bridge`): a **Claude ↔ ChatGPT** side panel
 that shows the conversation live (`/chatgpt` opens it), plus the skills `ask-chatgpt`,
 `discuss-with-chatgpt` and `check-translation-with-chatgpt`. Install it in Claude Code with
@@ -35,7 +36,7 @@ Run the following commands from the bridge folder.
 `doctor` checks that Claude Code (`claude auth login`) and Codex CLI (`codex login`) are installed and signed in.
 `connect` registers the bridge as an MCP entry named `local-ai-bridge` in each detected client
 (existing entries are never overwritten). Refresh the client's MCP list to see `ask_peer`, `read_reply`,
-`check_inbox`, `reply_to_peer`, and `save_checkpoint`.
+`check_inbox`, `reply_to_peer`, and `save_checkpoint`, plus `generate_image` in Claude Code.
 
 If a client is not detected, set `claude_path` or `codex_path` in `bridge-config.json`.
 Relative override paths are resolved from the bridge data folder. After moving
@@ -85,6 +86,25 @@ decisions and unresolved questions for recovery.
 A confirmed lost provider session can restart using the checkpoint and up to
 six recent answered exchanges from that topic. The local browser view shows
 session continuity and lets you open the full context and diagnostics.
+
+## Claude asks ChatGPT for a picture
+
+`ask_peer` cannot make pictures, because the peer is told never to create anything. Use `generate_image`
+instead: give it a description (`prompt`) and the file to create (`save_to`), relative to the workspace
+or a full path inside it, ending in `.png`, `.jpg`, `.jpeg` or `.webp`. With the CLI:
+
+    python ai_bridge.py image --workspace C:\path\to\project --save-to images\hero.png --prompt-file prompt.txt
+
+- **How it works:** the bridge starts a separate one-off Codex session with the shell off and image generation
+  on. ChatGPT makes one picture with its image tool, which saves it under `%USERPROFILE%\.codex\generated_images`.
+  The bridge then copies that file into your project. It uses your ChatGPT subscription's image allowance, not an API key.
+- **Never replaces a file:** an existing `save_to` is refused. If the name is taken by the time the picture is
+  ready, `-2`, `-3` is added. The file type follows the real image, so `hero.jpg` becomes `hero.png` when ChatGPT
+  makes a PNG. The result's `image_path` is the file that was written.
+- **Only into the workspace:** `save_to` must be inside the workspace folder (by default the folder the Claude
+  session runs in). Only Claude can request a picture; Codex can make pictures itself.
+- A picture often takes one to two minutes. If the result says `queued` or `running`, call `read_reply` (or `get`).
+  If ChatGPT makes no picture, the request fails with `no_image` and its reason.
 
 ## ChatGPT asks Claude
 
