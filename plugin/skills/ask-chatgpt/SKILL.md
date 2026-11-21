@@ -1,6 +1,6 @@
 ---
 name: ask-chatgpt
-description: 'Ask ChatGPT (through the local AI Bridge and the ChatGPT/Codex subscription) for a second opinion, ideas, inspiration or a review while Claude does the work, or have it make a picture. ChatGPT can read the project files and run read-only commands such as git diff, so it reviews the real code. Use when Saeed says "ask ChatGPT", "get a second opinion", "what would ChatGPT think" or "brainstorm with ChatGPT", and when he wants an image, photo, illustration, icon or concept art made with ChatGPT (generate_image, on the subscription, no API key). Also use it without being asked - before a commit or PR with non-trivial logic changes (ask for a bug review of the diff), when a bug is still unfixed after two attempts, before a hard-to-undo decision (data format, architecture, new dependency), and before claiming an experiment or Kaggle result improved. Not for translations (use check-translation-with-chatgpt).'
+description: 'Ask ChatGPT (through the local AI Bridge and the ChatGPT/Codex subscription) for a second opinion, ideas, inspiration or a review while Claude does the work, or have it make a picture. ChatGPT can read the project files and run read-only commands such as git diff, so it reviews the real code. Use when Saeed says "ask ChatGPT", "get a second opinion", "what would ChatGPT think" or "brainstorm with ChatGPT", and when he wants an image, photo, illustration, icon or concept art made with ChatGPT (generate_image, on the subscription, no API key). Also use it before drawing any shape, icon, illustration, logo or mockup yourself (SVG, CSS, canvas), to decide whether an AI-generated picture would look better. Also use it without being asked - before a commit or PR with non-trivial logic changes (ask for a bug review of the diff), when a bug is still unfixed after two attempts, before a hard-to-undo decision (data format, architecture, new dependency), and before claiming an experiment or Kaggle result improved. Not for translations (use check-translation-with-chatgpt).'
 ---
 
 # Ask ChatGPT
@@ -51,6 +51,16 @@ on your own. Fallback CLI (from the bridge folder):
 
 ## Pictures
 `ask_peer` cannot make pictures: ChatGPT is told never to create anything there, and it will refuse.
+**Decide on your own, too.** Whenever you are about to draw something yourself - an SVG, CSS or
+canvas shape, an icon, an illustration, a logo, a background, a mockup or concept art, simple or
+complex - first ask: would an AI-generated picture look clearly better here? Usually yes for
+illustrations, realistic or painterly scenes, textures, characters, mood pieces, concept art and
+detailed icons. Usually no when the result must be code (an animated or interactive shape, a watch
+face or chart driven by data, something that must scale or be recoloured or edited later), or for
+plain geometry, diagrams and UI controls; a generated picture can still serve there as a reference
+to build from. If the picture would look better, make it with `generate_image` without waiting to be
+asked, and tell Saeed in one line that you chose a generated picture and why.
+
 When Saeed wants an image made with ChatGPT, use `mcp__local-ai-bridge__generate_image`. It runs on
 the ChatGPT subscription, so prefer it to Saeed's OpenAI API key, which costs money; use the key only
 when he asks for it.
