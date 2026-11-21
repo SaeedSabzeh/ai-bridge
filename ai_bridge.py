@@ -208,7 +208,7 @@ def init(base=BASE):
     config = base / "bridge-config.json"
     if not config.exists():
         atomic_json(config, {"timeout_seconds": 300, "claude_path": None, "codex_path": None,
-                             "peer_tools": True, "web_search": True, "codex_model": "gpt-6.2-sol", "codex_effort": "xhigh",
+                             "peer_tools": True, "web_search": True, "codex_model": "gpt-6.2-astra", "codex_effort": "high",
                              "claude_model": None, "claude_effort": None})
     return read_json(config)
 
