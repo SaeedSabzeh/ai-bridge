@@ -7,6 +7,10 @@ and the answer comes back into the same session.
 Each assistant answers through **its own subscription CLI**, so no API keys and no API billing are involved.
 The bridge is a single Python script with no third-party dependencies; messages are plain JSON files on disk.
 
+![The conversation viewer: Claude asks ChatGPT (Codex) to review a diff, ChatGPT reads the code and finds a bug, and Claude reports back after fixing it.](docs/conversation-view.png)
+
+*A code review through the bridge, shown in the conversation viewer (sample data).*
+
 ## What it does
 
 - **Second opinions with real context.** The assistant that answers starts in the asker's project folder and
