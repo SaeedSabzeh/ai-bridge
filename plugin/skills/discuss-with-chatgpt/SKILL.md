@@ -1,6 +1,6 @@
 ---
 name: discuss-with-chatgpt
-description: 'Hold a real multi-round discussion with ChatGPT (through the local AI Bridge and the ChatGPT/Codex subscription), not just one question and answer. ChatGPT remembers the whole topic, can read the project files, pushes back and asks questions; Claude answers, challenges or concedes, and reports the outcome. Use when Saeed says "discuss with ChatGPT", "talk it through with ChatGPT", "debate this with ChatGPT" or "go back and forth with ChatGPT", or on your own when a hard-to-undo decision (data format, architecture, a new dependency) deserves more than one round. For a single quick question use ask-chatgpt.'
+description: 'Hold a real multi-round discussion with ChatGPT (through the local AI Bridge and the ChatGPT/Codex subscription), not just one question and answer. ChatGPT remembers the whole topic, can read the project files, pushes back and asks questions; Claude answers, challenges or concedes, and reports the outcome. Use when the user says "discuss with ChatGPT", "talk it through with ChatGPT", "debate this with ChatGPT" or "go back and forth with ChatGPT", or on your own when a hard-to-undo decision (data format, architecture, a new dependency) deserves more than one round. For a single quick question use ask-chatgpt.'
 ---
 
 # Discuss with ChatGPT
@@ -25,10 +25,10 @@ as `git diff`, and search the web. It cannot edit anything. Its views are advice
    - ask the next question that would change the decision.
    Send what's new. Use `save_checkpoint` to preserve decisions and unresolved questions for recovery.
 4. **Stop** when you agree, when the disagreement is clear and won't move, or after about 5 rounds
-   (or Saeed's limit). Don't keep talking to look thorough.
-5. **Report to Saeed:** the decision, where you agreed and disagreed (and why), and what you'll do
+   (or the user's limit). Don't keep talking to look thorough.
+5. **Report to the user:** the decision, where you agreed and disagreed (and why), and what you'll do
    next. A suggestion is not a result: test it before calling it an improvement.
 
-Saeed can steer at any point ("tell ChatGPT …", "ask it about …"). Pass his words on as his, e.g.
-"Saeed adds: …". The whole conversation shows live in the **Claude ↔ ChatGPT** panel (`/chatgpt`).
+The user can steer at any point ("tell ChatGPT …", "ask it about …"). Pass their words on as theirs, e.g.
+"The user adds: …". The whole conversation shows live in the **Claude ↔ ChatGPT** panel (`/chatgpt`).
 If the bridge is unavailable or ChatGPT's limit is reached, say so and continue on your own.

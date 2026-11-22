@@ -1,6 +1,6 @@
 ---
 name: check-translation-with-chatgpt
-description: 'Have ChatGPT (via the local AI Bridge and the ChatGPT/Codex subscription, no API key) review translated text - Arabic, Persian, English, Italian or any language - so it reads naturally to a native speaker, then apply the good suggestions. Use when Saeed asks to check, review or improve a translation "with ChatGPT" through the bridge or subscription, and on your own before finishing user-facing text you wrote or changed in Arabic, Persian, Italian or another language Saeed does not write in himself. If Saeed asks to use his OpenAI API key instead, use the translation-review skill.'
+description: 'Have ChatGPT (via the local AI Bridge and the ChatGPT/Codex subscription, no API key) review translated text - Arabic, Persian, English, Italian or any language - so it reads naturally to a native speaker, then apply the good suggestions. Use when the user asks to check, review or improve a translation "with ChatGPT" through the bridge or subscription, and on your own before finishing user-facing text you wrote or changed in Arabic, Persian, Italian or another language the user does not write in themselves. If the user asks to use their OpenAI API key instead, use the translation-review skill.'
 ---
 
 # Check a translation with ChatGPT
@@ -16,7 +16,7 @@ description: 'Have ChatGPT (via the local AI Bridge and the ChatGPT/Codex subscr
    - Ask for the answer as a table: key | current | suggested | short reason, and "OK" when
      the current text is already good.
 3. `ask_peer` waits and returns the reply. If it says `queued` or `running`, call
-   `mcp__local-ai-bridge__read_reply` with the request ID (don't ask again). Saeed can watch it
+   `mcp__local-ai-bridge__read_reply` with the request ID (don't ask again). The user can watch it
    in the **Claude ↔ ChatGPT** panel.
 4. Check each suggestion yourself: meaning preserved, placeholders intact, consistent terms
    across the batch, fits the UI. Reject ones that change meaning and say why.
