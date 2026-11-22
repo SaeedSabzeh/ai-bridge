@@ -25,6 +25,27 @@ The bridge is a single Python script with no third-party dependencies; messages 
 - **Safety by default.** The peer is read-only, questions that contain an API key or token are refused,
   a request is never silently retried, and workers cannot call the bridge recursively.
 
+## The bridge or the OpenAI API?
+
+You can also reach ChatGPT's models with an API key. Each has its place.
+
+**Use the bridge when:**
+- **Cost matters.** It runs on the ChatGPT subscription you already pay for, while the API bills every
+  request. Long review loops or scoring images round after round add up quickly on the API.
+- **The answer depends on your files.** The peer opens the code, diffs, logs and images in the project
+  folder itself, so nothing has to be uploaded or pasted into a prompt.
+- **The work runs in rounds.** A topic keeps its session, so in a review-fix-review or score-and-improve
+  loop the peer remembers the earlier rounds and knows what changed since the last answer.
+
+**Use the API when:**
+- **You need repeatable numbers.** With a fixed model and settings, the same input gets nearly the same
+  answer. Through the bridge the result can drift a little between sessions, which matters when you
+  compare close scores such as 7.9 and 8.1.
+- **You process a batch.** Scoring or checking hundreds of items from one script is simple with the API
+  and slow through a conversational bridge.
+- **The bridge is unavailable.** For example when the subscription's usage limit is reached or the Codex
+  CLI cannot run.
+
 ## Requirements
 
 - Windows (the bridge is developed and tested there; other systems may need small changes)
