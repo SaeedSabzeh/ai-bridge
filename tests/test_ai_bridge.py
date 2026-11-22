@@ -694,6 +694,8 @@ bridge.Mailbox(base, bridge.config_for(base), runner=bridge.cli_reply, external_
     def image_setup(self, caption='A blue square.', make_image=True, during_run=None):
         project = self.base / 'project'
         project.mkdir(exist_ok=True)
+        # The bridge stores the real path; a temp folder can have a short 8.3 name (RUNNER~1) on Windows.
+        project = project.resolve()
         home = self.base / 'codex-home'
         folder = home / 'generated_images' / self.THREAD
         folder.mkdir(parents=True, exist_ok=True)
