@@ -478,6 +478,348 @@ bridge.Mailbox(base, bridge.config_for(base), runner=bridge.cli_reply, external_
         self.assertEqual(item['error_code'], 'cli_missing')
         self.assertIn('codex CLI was not found', item['error'])
 
+    def test_tool_replies_are_brief_and_inbox_shows_waiting_questions_in_full(self):
+        asked = b.mcp_call(self.base, 'claude', 'ask_peer', {'question': 'Long question ' + 'x' * 400,
+                                                             'context': 'BULKY_CONTEXT', 'mode': 'manual'})
+        self.assertEqual(asked['status'], 'queued')
+        self.assertIn('do not submit', asked['next'])
+        for hidden in ('question', 'context', 'events'):
+            self.assertNotIn(hidden, asked)
+        inbox = b.mcp_call(self.base, 'chatgpt', 'check_inbox', {})
+        self.assertEqual(inbox['waiting_for_you'], 1)
+        self.assertEqual(inbox['requests'][0]['context'], 'BULKY_CONTEXT')
+        self.assertTrue(inbox['requests'][0]['question'].endswith('x' * 400))
+        self.assertEqual(b.mcp_call(self.base, 'claude', 'check_inbox', {}), {'waiting_for_you': 0, 'requests': []})
+        replied = b.mcp_call(self.base, 'chatgpt', 'reply_to_peer', {'request_id': asked['id'], 'answer': 'Done'})
+        self.assertNotIn('context', replied)
+        read = b.mcp_call(self.base, 'claude', 'read_reply', {'request_id': asked['id']})
+        self.assertEqual((read['status'], read['answer']), ('answered', 'Done'))
+        self.assertNotIn('BULKY_CONTEXT', json.dumps(read))
+        self.assertNotIn('next', read)
+        summary = b.mcp_call(self.base, 'chatgpt', 'check_inbox', {})
+        self.assertEqual(summary['waiting_for_you'], 0)
+        self.assertLessEqual(len(summary['requests'][0]['question']), 201)
+        self.assertNotIn('answer', summary['requests'][0])
+        self.assertNotIn('context', summary['requests'][0])
+
+    def test_ask_peer_waits_for_the_automatic_answer(self):
+        answered = b.mcp_call(self.base, 'chatgpt', 'ask_peer', {'question': 'Wait for me', 'wait_seconds': 10})
+        self.assertEqual(answered['status'], 'answered')
+        self.assertIn('Wait for me', answered['answer'])
+        self.release.clear()
+        pending = b.mcp_call(self.base, 'chatgpt', 'ask_peer', {'question': 'Too slow', 'wait_seconds': 0})
+        self.assertIn(pending['status'], ('queued', 'running'))
+        self.assertNotIn('answer', pending)
+        self.assertEqual(b.mcp_call(self.base, 'chatgpt', 'read_reply',
+                                    {'request_id': pending['id'], 'wait_seconds': 0})['status'], pending['status'])
+        self.release.set()
+        later = b.mcp_call(self.base, 'chatgpt', 'read_reply', {'request_id': pending['id'], 'wait_seconds': 10})
+        self.assertEqual(later['status'], 'answered')
+        for bad in ('5', 51, -1, True, 1.5):
+            with self.assertRaises(b.BridgeError):
+                b.mcp_call(self.base, 'chatgpt', 'ask_peer', {'question': 'Bad wait', 'wait_seconds': bad})
+
+    def test_stale_manual_question_expires_and_never_blocks_automatic_requests(self):
+        old = self.submit(mode='manual', question='Forgotten question')
+        path = self.base / 'data/requests' / (old['id'] + '.json')
+        stale = (b.dt.datetime.now(b.dt.timezone.utc) - b.dt.timedelta(hours=b.MANUAL_EXPIRY_HOURS + 1))
+        old['created_at'] = stale.isoformat(timespec='microseconds')
+        b.atomic_json(path, old)
+        expired = b.api(self.base, '/api/requests/' + old['id'])
+        self.assertEqual((expired['status'], expired['error_code']), ('failed', 'expired'))
+        self.assertEqual(b.read_json(path)['status'], 'failed')
+        fresh = self.submit(mode='manual', question='Asked just now')
+        self.assertEqual(b.api(self.base, '/api/requests/' + fresh['id'])['status'], 'queued')
+        for _ in range(b.MAX_PENDING - 1):
+            self.submit(mode='manual')
+        self.assertEqual(self.wait(self.submit(question='Automatic still works'))['status'], 'answered')
+
+    def test_damaged_or_stray_files_do_not_break_the_mailbox(self):
+        good = self.submit(mode='manual', question='Still readable')
+        folder = self.base / 'data/requests'
+        (folder / ('d' * 32 + '.json')).write_text('{not json', encoding='utf-8')
+        (folder / ('e' * 32 + '.json')).write_text('{"id": 1}', encoding='utf-8')
+        (folder / 'notes.json').write_text('[]', encoding='utf-8')
+        for name, stamp in (('1' * 32, 'broken'), ('2' * 32, '2026-11-10T12:00:00')):  # Not a date; no time zone.
+            b.atomic_json(folder / (name + '.json'), {**good, 'id': name, 'created_at': stamp, 'updated_at': stamp})
+        self.assertEqual([item['id'] for item in b.api(self.base, '/api/requests')['requests']], [good['id']])
+        self.assertEqual(self.submit(mode='manual', question='A new one')['status'], 'queued')
+        with self.assertRaises(b.BridgeError) as caught:
+            b.api(self.base, '/api/requests/' + 'd' * 32)
+        self.assertEqual(caught.exception.status, 500)
+        requests = [{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                     'params': {'name': 'read_reply', 'arguments': {'request_id': 'e' * 32, 'wait_seconds': 0}}},
+                    {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call', 'params': {'name': 'check_inbox', 'arguments': {}}}]
+        run = subprocess.run([sys.executable, str(SCRIPT), '--data-dir', str(self.base), 'mcp', '--identity', 'claude'],
+                             input='\n'.join(map(json.dumps, requests)) + '\n', capture_output=True, encoding='utf-8', timeout=10)
+        damaged, inbox = [json.loads(line)['result'] for line in run.stdout.splitlines()]
+        self.assertTrue(damaged['isError'])
+        self.assertFalse(inbox['isError'])
+        self.assertEqual(json.loads(inbox['content'][0]['text'])['waiting_for_you'], 2)
+
+    def test_question_or_context_with_a_credential_is_refused(self):
+        # Built at run time so this file itself never contains anything that looks like a credential.
+        samples = ['gh' + 'p_' + 'a1B2' * 9, 's' + 'k-' + 'proj-' + 'Zz09' * 8, 'AK' + 'IA' + 'ABCD1234EFGH5678',
+                   '-----BEGIN RSA ' + 'PRIVATE KEY-----']
+        for secret in samples:
+            for field in ('question', 'context'):
+                with self.assertRaises(b.BridgeError) as caught:
+                    self.submit(mode='manual', **{field: 'please check ' + secret})
+                self.assertIn(field, str(caught.exception))
+                self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(list((self.base / 'data/requests').glob('*.json')), [])
+        self.assertIsNone(b.secret_in('task sk-learn pipeline, risk-adjusted, token = os.environ["KEY"]'))
+
+    def test_workspace_is_validated_stored_and_used_as_the_peer_folder(self):
+        project = self.base / 'my project'
+        project.mkdir()
+        for bad in ('relative/folder', str(self.base / 'missing'), 5, 'x' * 1001):
+            with self.assertRaises(b.BridgeError):
+                self.submit(mode='manual', workspace=bad)
+        self.assertEqual(self.submit(mode='manual', workspace=str(project))['workspace'], str(project.resolve()))
+        fixture = b.mcp_call(self.base, 'claude', 'ask_peer', {'question': 'q', 'mode': 'manual'}, str(project))
+        self.assertEqual(fixture['workspace'], str(project.resolve()))
+        seen = []
+
+        def process(cmd, cwd, timeout, input_text=None, env=None):
+            seen.append((cmd, Path(cwd), input_text))
+            return (0, '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n', '')
+        with patch.object(b, 'executable_for', return_value=['fake']), patch.object(b, 'ready'), \
+                patch.object(b, 'run_process', side_effect=process), patch.object(b, 'codex_windows_sandbox', return_value='elevated'):
+            b.cli_reply('chatgpt', 'Look at the code', '', self.base, self.config, sender='claude', workspace=str(project))
+            b.cli_reply('chatgpt', 'No folder', '', self.base, self.config, sender='claude', workspace=str(self.base / 'gone'))
+            b.cli_reply('chatgpt', 'Locked down', '', self.base, {**self.config, 'peer_tools': False},
+                        sender='claude', workspace=str(project))
+        (with_folder, without_folder, locked) = seen
+        self.assertEqual(with_folder[1], project)
+        self.assertIn(str(project), with_folder[2])
+        self.assertIn('read-only', with_folder[2])
+        self.assertIn('windows.sandbox="elevated"', with_folder[0])
+        self.assertIn('web_search="live"', with_folder[0])
+        self.assertNotIn('features.shell_tool=false', with_folder[0])
+        self.assertEqual(without_folder[1], self.base / 'data/workers/chatgpt')
+        self.assertEqual(locked[1], self.base / 'data/workers/chatgpt')
+        self.assertIn('features.shell_tool=false', locked[0])
+        self.assertIn('do not run tools', locked[2])
+        for cmd, _, _ in seen:
+            self.assertIn('sandbox_mode="read-only"', cmd)
+            self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', cmd)
+
+    def test_codex_answer_is_the_last_message_after_lookups(self):
+        events = '\n'.join(json.dumps(event) for event in (
+            {'type': 'thread.started', 'thread_id': 'new-thread-123'},
+            {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'I will read the file first.'}},
+            {'type': 'item.completed', 'item': {'type': 'command_execution', 'command': 'git diff', 'exit_code': 0}},
+            {'type': 'item.completed', 'item': {'type': 'web_search', 'query': 'python release'}},
+            {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'The final answer.'}},
+            {'type': 'turn.completed'}))
+        notes = []
+        with patch.object(b, 'executable_for', return_value=['fake']), patch.object(b, 'ready'), \
+                patch.object(b, 'run_process', return_value=(0, events, '')):
+            answer = b.cli_reply('chatgpt', 'Review', '', self.base, self.config, task_id='topic',
+                                 progress=lambda message, **fields: notes.append(message))
+        self.assertEqual(answer, 'The final answer.')
+        self.assertIn('Codex ran 2 read-only lookups before answering', notes)
+
+    def test_sign_in_is_checked_every_turn_and_only_the_codex_version_check_is_remembered(self):
+        executable = self.base / 'fake-cli.exe'
+        executable.write_bytes(b'fixture')
+        with patch.object(b, 'auth_status') as auth, \
+                patch.object(b, 'run_process', return_value=(0, '--ignore-user-config', '')) as process:
+            for _ in range(3):
+                b.ready('chatgpt', [str(executable)], self.base, self.base)
+            self.assertEqual((auth.call_count, process.call_count), (3, 2))
+            b.ready('claude', [str(executable)], self.base, self.base)
+            self.assertEqual((auth.call_count, process.call_count), (4, 2))
+            os.utime(executable, (1000, 1000))  # An updated CLI is checked again.
+            b.ready('chatgpt', [str(executable)], self.base, self.base)
+            self.assertEqual(process.call_count, 4)
+        # A login that changed to API billing after an earlier good check is still refused.
+        with patch.object(b, 'run_process', return_value=(0, 'Logged in using an API key', '')):
+            with self.assertRaises(b.BridgeError):
+                b.ready('chatgpt', [str(executable)], self.base, self.base)
+
+    def test_resumed_session_gets_the_current_rules_and_only_the_final_codex_message(self):
+        b.SessionStore(self.base).set('chatgpt', 'topic', '00000000-0000-4000-8000-000000000000')
+        events = '\n'.join(json.dumps(event) for event in (
+            {'type': 'turn.started'},
+            {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Working...'}},
+            {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Final answer'}}))
+        with patch.object(b, 'executable_for', return_value=['fake']), patch.object(b, 'ready'), \
+                patch.object(b, 'run_process', return_value=(0, events, '')) as process:
+            answer = b.cli_reply('chatgpt', 'Continue', '', self.base, self.config, task_id='topic')
+        self.assertEqual(answer, 'Final answer')
+        command, prompt = process.call_args.args[0], process.call_args.args[3]
+        self.assertIn('resume', command)
+        self.assertIn('replacing any earlier rule', prompt)
+        self.assertIn('never edit', prompt)
+
+    def test_config_accepts_model_settings_and_rejects_bad_ones(self):
+        path = self.base / 'bridge-config.json'
+        b.atomic_json(path, {**self.config, 'codex_model': 'gpt-example', 'codex_effort': 'high', 'claude_model': 'opus'})
+        captured = []
+
+        def process(cmd, cwd, timeout, input_text=None, env=None):
+            captured.append(cmd)
+            return (0, '{"is_error":false,"result":"ok"}', '') if 'fake-claude' in cmd else \
+                (0, '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}\n', '')
+        for peer in b.PEERS:
+            with patch.object(b, 'executable_for', return_value=['fake-' + peer]), patch.object(b, 'ready'), \
+                    patch.object(b, 'run_process', side_effect=process):
+                b.cli_reply(peer, 'Hello', '', self.base, b.config_for(self.base))
+        claude, codex = captured
+        self.assertEqual(claude[claude.index('--model') + 1], 'opus')
+        self.assertEqual(codex[codex.index('--model') + 1], 'gpt-example')
+        self.assertIn('model_reasoning_effort="high"', codex)
+        for key, value in (('codex_model', '--oss'), ('claude_effort', 'high; rm'), ('peer_tools', 'yes'),
+                           ('timeout_seconds', 5), ('codex_windows_sandbox', 'none')):
+            b.atomic_json(path, {**self.config, key: value})
+            with self.assertRaises(b.BridgeError):
+                b.config_for(self.base)
+
+    def test_readme_is_the_only_guide_and_setup_never_overwrites_it(self):
+        readme = SCRIPT.parent / 'README.md'
+        before = readme.read_bytes()
+        self.assertEqual(b.guide(self.base), readme.read_text(encoding='utf-8'))
+        with patch('builtins.print'):
+            b.setup(self.base, refresh_docs=True)
+        self.assertEqual((self.base / 'README.md').read_text(encoding='utf-8'), readme.read_text(encoding='utf-8'))
+        self.assertIn('ask --from YOUR_NAME', (self.base / 'CLAUDE.md').read_text(encoding='utf-8'))
+        self.assertIn('Note for ChatGPT', (self.base / 'AGENTS.md').read_text(encoding='utf-8'))
+        self.assertEqual(readme.read_bytes(), before)
+
+    # Image requests. Codex is replaced by a fake run that leaves a picture where Codex's image tool would.
+    THREAD = '01a1ff29-4272-7870-8495-cd1070e8839e'
+
+    def image_setup(self, caption='A blue square.', make_image=True, during_run=None):
+        project = self.base / 'project'
+        project.mkdir(exist_ok=True)
+        # The bridge stores the real path; a temp folder can have a short 8.3 name (RUNNER~1) on Windows.
+        project = project.resolve()
+        home = self.base / 'codex-home'
+        folder = home / 'generated_images' / self.THREAD
+        folder.mkdir(parents=True, exist_ok=True)
+        runs = []
+
+        def run(command, cwd, timeout, prompt=None, env=None):
+            if command[-1] == '-':
+                runs.append((command, cwd, prompt))
+                if make_image:
+                    (folder / 'exec-1.png').write_bytes(b'\x89PNG fake')
+                if during_run:
+                    during_run()
+                events = [{'type': 'thread.started', 'thread_id': self.THREAD}, {'type': 'turn.started'}]
+                if caption:
+                    events.append({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': caption}})
+                events.append({'type': 'turn.completed'})
+                return 0, '\n'.join(map(json.dumps, events)), ''
+            return 0, '', ''
+
+        patches = [patch.object(b, 'executable_for', return_value=['codex']), patch.object(b, 'ready'),
+                   patch.object(b, 'run_process', side_effect=run), patch.dict(os.environ, {'CODEX_HOME': str(home)})]
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return project, runs
+
+    def test_image_request_saves_a_new_file_through_codex_image_tool(self):
+        project, runs = self.image_setup()
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'A blue square on white', 'save_to': 'art/square.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'answered', item)
+        self.assertEqual(item['kind'], 'image')
+        saved = project / 'art' / 'square.png'
+        self.assertEqual(Path(item['image_path']), saved)
+        self.assertEqual(saved.read_bytes(), b'\x89PNG fake')
+        self.assertIn('A blue square.', item['answer'])
+        self.assertIn(str(saved), item['answer'])
+        command, cwd, prompt = runs[0]
+        self.assertIn('features.image_generation=true', command)
+        self.assertIn('features.shell_tool=false', command)
+        self.assertIn('--ephemeral', command)
+        self.assertNotEqual(Path(cwd).resolve(), project.resolve())
+        self.assertTrue(prompt.startswith(b.IMAGE_RULES))
+        self.assertTrue(prompt.endswith('A blue square on white'))
+        # A retry of the same request returns it instead of refusing the file it created.
+        record = b.read_json(self.base / 'data/requests' / (item['id'] + '.json'))
+        again = b.api(self.base, '/api/requests', {key: record[key] for key in
+                      ('id', 'sender', 'recipient', 'kind', 'question', 'save_to', 'workspace')})
+        self.assertEqual(again['status'], 'answered')
+        with self.assertRaises(b.BridgeError):
+            b.api(self.base, '/api/requests', {key: record[key] for key in ('id', 'sender', 'recipient', 'question', 'workspace')})
+        self.assertEqual(len(runs), 1)
+
+    def test_image_never_replaces_a_file_and_takes_the_real_file_type(self):
+        project, _ = self.image_setup(caption='')
+        (project / 'pic.png').write_bytes(b'keep me')
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'A cat', 'save_to': 'pic.jpg', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'answered', item)
+        self.assertEqual(Path(item['image_path']), project / 'pic-2.png')
+        self.assertEqual((project / 'pic.png').read_bytes(), b'keep me')
+        self.assertTrue(item['answer'].startswith('Saved the image to'))
+        self.assertEqual(sorted(path.name for path in project.iterdir()), ['pic-2.png', 'pic.png'])  # No temporary file left.
+
+    def test_image_request_rules(self):
+        project, runs = self.image_setup()
+        (project / 'taken.png').write_bytes(b'x')
+        self.assertIn('generate_image', [tool['name'] for tool in b.mcp_tools('claude')])
+        self.assertNotIn('generate_image', [tool['name'] for tool in b.mcp_tools('chatgpt')])
+        with self.assertRaises(b.BridgeError):
+            b.mcp_call(self.base, 'chatgpt', 'generate_image', {'prompt': 'x', 'save_to': 'a.png'}, str(project))
+        for save_to in ('../outside.png', str(self.base / 'outside.png'), 'picture.gif', 'taken.png', 'folder/',
+                        'taken.png:hidden.png', 'sub:dir/a.png'):
+            with self.subTest(save_to=save_to), self.assertRaises(b.BridgeError):
+                b.mcp_call(self.base, 'claude', 'generate_image', {'prompt': 'x', 'save_to': save_to}, str(project))
+        with self.assertRaises(b.BridgeError):
+            b.mcp_call(self.base, 'claude', 'generate_image', {'prompt': 'x', 'save_to': 'a.png'}, None)
+        image = dict(sender='claude', recipient='chatgpt', kind='image', question='x', save_to='a.png', workspace=str(project))
+        for change in ({'mode': 'manual'}, {'context': 'extra'}, {'task_id': 'topic'}, {'sender': 'user'}, {'kind': 'video'}):
+            with self.subTest(change=change), self.assertRaises(b.BridgeError):
+                b.api(self.base, '/api/requests', {**image, **change})
+        with patch.dict(os.environ, {'AI_BRIDGE_WORKER': '1'}), self.assertRaises(b.BridgeError):
+            b.mcp_call(self.base, 'claude', 'generate_image', {'prompt': 'x', 'save_to': 'a.png'}, str(project))
+        self.assertEqual(runs, [])
+
+    def test_image_failures_are_reported_and_save_nothing(self):
+        project, _ = self.image_setup(caption='I cannot draw that.', make_image=False)
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'Something', 'save_to': 'none.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'failed')
+        self.assertEqual(item['error_code'], 'no_image')
+        self.assertIn('I cannot draw that.', item['error'])
+        self.assertFalse((project / 'none.png').exists())
+
+    def test_image_is_not_saved_when_the_request_stopped_meanwhile(self):
+        def give_up():
+            path = next((self.base / 'data/requests').glob('*.json'))
+            record = b.read_json(path)
+            record.update(status='failed', error='Deadline passed')
+            b.atomic_json(path, record)
+        project, _ = self.image_setup(during_run=give_up)
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'Late', 'save_to': 'late.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'failed')
+        time.sleep(.2)  # Let the worker finish after the record already failed.
+        self.assertFalse((project / 'late.png').exists())
+        self.assertNotIn('image_path', b.api(self.base, '/api/requests/' + item['id']))
+
+    @unittest.skipUnless(os.name == 'nt', 'Directory junctions are a Windows feature')
+    def test_image_is_not_saved_when_the_workspace_was_swapped_for_a_link(self):
+        import _winapi
+        elsewhere = self.base / 'elsewhere'
+        elsewhere.mkdir()
+
+        def swap():
+            (self.base / 'project').rename(self.base / 'project-old')
+            _winapi.CreateJunction(str(elsewhere), str(self.base / 'project'))
+        project, _ = self.image_setup(during_run=swap)
+        item = b.mcp_call(self.base, 'claude', 'generate_image',
+                          {'prompt': 'Swapped', 'save_to': 'swap.png', 'wait_seconds': 10}, str(project))
+        self.assertEqual(item['status'], 'failed', item)
+        self.assertEqual(item['error_code'], 'save_failed')
+        self.assertEqual(list(elsewhere.iterdir()), [])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -64,3 +64,39 @@ test('cards show speakers, colored status chips and rounds on every surface', as
     await ui.unmount()
   }
 })
+
+const HEX = 'f'.repeat(32)
+const TOPIC_FILES: Record<string, object> = {
+  'e.json': { id: '1'.repeat(32), sender: 'claude', recipient: 'chatgpt', mode: 'auto', task_id: HEX, topic: 'Experiment review',
+              status: 'answered', created_at: minutesAgo(9), updated_at: minutesAgo(8),
+              question: 'First question', answer: 'First answer', error: null },
+  'f.json': { id: '2'.repeat(32), sender: 'claude', recipient: 'chatgpt', mode: 'auto', task_id: HEX,
+              status: 'answered', created_at: minutesAgo(5), updated_at: minutesAgo(4),
+              question: 'Follow-up question', answer: 'Follow-up answer', error: null },
+  'g.json': { id: '3'.repeat(32), sender: 'claude', recipient: 'chatgpt', mode: 'auto', task_id: '9'.repeat(32),
+              status: 'answered', created_at: minutesAgo(2), updated_at: minutesAgo(1),
+              question: 'Untitled question', answer: 'Untitled answer', error: null },
+}
+
+test('cards show the topic label instead of a hex task ID', async ($, on) => {
+  on('command.register', () => ({ value: { command: 'chatgpt' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('clock.every', () => ({ value: undefined }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('fs.list', () => ({
+    value: Object.keys(TOPIC_FILES).map(name => ({ name, kind: 'file', size: 1, mtimeMs: 1, isLink: false })),
+  }))
+  on('fs.read', (_, e) => ({ value: JSON.stringify(TOPIC_FILES[String(e.path).split(/[\\/]/).pop() ?? '']) }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: JSON.stringify({ root: '/bridge', base: '/bridge', python: 'python' }),
+    stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // The record that carries a topic shows it, and a follow-up in the same task without one reuses it.
+  expect((await ui.findAll({ type: 'Text', text: /Experiment review/ })).length).toBe(2)
+  // A hex task ID with no topic anywhere is never shown.
+  expect(await ui.findAll({ type: 'Text', text: /[0-9a-f]{32}/ })).toHaveLength(0)
+  await ui.unmount()
+})

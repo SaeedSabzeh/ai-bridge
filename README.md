@@ -3,9 +3,13 @@
 A small local bridge that lets Claude Code and ChatGPT (Codex CLI) ask each other for questions, ideas,
 second opinions and translation checks. Messages are plain JSON files under `data/requests` in the bridge folder.
 Each assistant answers through its own subscription CLI; no API keys are used.
+The assistant that answers can look things up before it replies, read-only: it reads files in the
+asker's project folder, and Codex can also run read-only commands (`git diff`, searches) and search the web.
+It can never edit, create or delete anything. The one exception is a picture: Claude's `generate_image`
+has ChatGPT make an image, and the bridge saves it as a new file (see below).
 The `plugin/` folder is a Claude Code plugin (`chatgpt-bridge`): a **Claude ↔ ChatGPT** side panel
-that shows the conversation live (`/chatgpt` opens it), plus the skills `ask-chatgpt` and
-`check-translation-with-chatgpt`. Install it in Claude Code with
+that shows the conversation live (`/chatgpt` opens it), plus the skills `ask-chatgpt`,
+`discuss-with-chatgpt` and `check-translation-with-chatgpt`. Install it in Claude Code with
 `/plugin marketplace add <this repository or folder>` then `/plugin install chatgpt-bridge@ai-bridge`.
 The panel finds the bridge from the current folder or the registered user-scope
 `local-ai-bridge` MCP entry. Set `AI_BRIDGE_HOME` to point it to a different bridge folder.
@@ -32,7 +36,7 @@ Run the following commands from the bridge folder.
 `doctor` checks that Claude Code (`claude auth login`) and Codex CLI (`codex login`) are installed and signed in.
 `connect` registers the bridge as an MCP entry named `local-ai-bridge` in each detected client
 (existing entries are never overwritten). Refresh the client's MCP list to see `ask_peer`, `read_reply`,
-`check_inbox`, `reply_to_peer`, and `save_checkpoint`.
+`check_inbox`, `reply_to_peer`, and `save_checkpoint`, plus `generate_image` in Claude Code.
 
 If a client is not detected, set `claude_path` or `codex_path` in `bridge-config.json`.
 Relative override paths are resolved from the bridge data folder. After moving
@@ -44,13 +48,32 @@ Install the clients if needed:
 
 ## Claude asks ChatGPT
 
-With MCP: call `ask_peer` (then `read_reply` with the returned request ID if the answer is not ready).
+With MCP: call `ask_peer`. It waits up to 45 seconds for the answer and returns it. If the result still says
+`queued` or `running`, call `read_reply` with the returned request ID; it waits too.
 With the CLI:
 
-    python ai_bridge.py ask --from claude --to chatgpt --question-file question.txt --context-file code.txt
+    python ai_bridge.py ask --from claude --to chatgpt --workspace C:\path\to\project --question-file question.txt
     python ai_bridge.py get REQUEST_ID --wait 45
 
 `ask` waits up to 45 seconds. If it is still running, use `get` with the same ID; do not submit again.
+Both print a short record (status, answer, IDs). Add `--full` to see the stored question, context and events.
+
+### What the peer can see and do
+
+- **Files:** the peer starts in the workspace folder and can read files there. With MCP the workspace is the
+  folder the asking session runs in; with the CLI pass `--workspace`. So a question can say
+  "review `src/cache.py`" or "run `git diff`" instead of pasting the code. `--context-file` (or `context`)
+  is for what is not on disk: an error message, a log, results.
+- **Codex** runs inside its read-only sandbox: it can run commands that read (`git diff`, `git log`, `rg`,
+  `type`) and search the web, and any attempt to write is denied by the sandbox.
+- **Claude** gets only its `Read`, `Grep` and `Glob` tools: no shell, no edits, no network.
+  Common secret files (`.env`, keys, tokens, `~/.ssh`) are blocked for it.
+- **Limits you should know:** read access is not confined to the workspace. Codex's read-only sandbox can read
+  other folders on the computer, and Claude's block list covers common secret files, not every one. Whatever
+  the peer reads is processed by its provider. Keep secrets out of project folders you share.
+- To switch all of this off and have the peer answer only from the text you send, set `"peer_tools": false`
+  in `bridge-config.json`. `"web_search": false` turns off only Codex's web search.
+
 Start a new subject with `--topic "Experiment review"` (or `topic` in MCP).
 The label is for display. New requests without `--task` get a unique task ID,
 even if another topic has the same label. Reuse the returned `--task TASK_ID`
@@ -63,6 +86,25 @@ decisions and unresolved questions for recovery.
 A confirmed lost provider session can restart using the checkpoint and up to
 six recent answered exchanges from that topic. The local browser view shows
 session continuity and lets you open the full context and diagnostics.
+
+## Claude asks ChatGPT for a picture
+
+`ask_peer` cannot make pictures, because the peer is told never to create anything. Use `generate_image`
+instead: give it a description (`prompt`) and the file to create (`save_to`), relative to the workspace
+or a full path inside it, ending in `.png`, `.jpg`, `.jpeg` or `.webp`. With the CLI:
+
+    python ai_bridge.py image --workspace C:\path\to\project --save-to images\hero.png --prompt-file prompt.txt
+
+- **How it works:** the bridge starts a separate one-off Codex session with the shell off and image generation
+  on. ChatGPT makes one picture with its image tool, which saves it under `%USERPROFILE%\.codex\generated_images`.
+  The bridge then copies that file into your project. It uses your ChatGPT subscription's image allowance, not an API key.
+- **Never replaces a file:** an existing `save_to` is refused. If the name is taken by the time the picture is
+  ready, `-2`, `-3` is added. The file type follows the real image, so `hero.jpg` becomes `hero.png` when ChatGPT
+  makes a PNG. The result's `image_path` is the file that was written.
+- **Only into the workspace:** `save_to` must be inside the workspace folder (by default the folder the Claude
+  session runs in). Only Claude can request a picture; Codex can make pictures itself.
+- A picture often takes one to two minutes. If the result says `queued` or `running`, call `read_reply` (or `get`).
+  If ChatGPT makes no picture, the request fails with `no_image` and its reason.
 
 ## ChatGPT asks Claude
 
@@ -81,15 +123,47 @@ Tell either assistant, **“Use peer coaching on this task. Ask the other assist
 
 Either Claude or Codex can lead. The lead owns edits and verification, and the coach replies through the bridge. Both panels show the exchange.
 
+## Settings
+
+`bridge-config.json` in the bridge folder (created on first run, not committed):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `timeout_seconds` | 300 | Longest one answer may take (10 to 1800). Raise it if reviews of large changes time out. |
+| `peer_tools` | true | Let the peer read files and look things up, read-only. |
+| `web_search` | true | Let Codex search the web. |
+| `codex_model` | `"gpt-6.2-astra"` | Model Codex answers with. `null` uses the Codex CLI's default. |
+| `codex_effort` | `"high"` | Codex reasoning effort. `null` uses the default. |
+| `claude_model` | null | Model Claude answers with. `null` uses the Claude CLI's default. |
+| `claude_effort` | null | Claude reasoning effort, e.g. `"high"`. `null` uses the default. |
+| `codex_windows_sandbox` | null | `"elevated"` or `"unelevated"`. `null` follows your own Codex setting. |
+| `claude_path`, `codex_path` | null | Where a CLI is, if it is not found automatically. |
+
+The bridge does not load your personal Codex or Claude settings for these answers, so a model you chose
+there is not used unless you also set it here.
+
 ## History
 
 Every request is one file under `data/requests/REQUEST_ID.json`. Use the commands to change them.
+A manual question nobody answers within 24 hours is closed as expired.
 
 ## Troubleshooting
 
 - `doctor` shows which provider is not ready and why.
 - Calls count against each provider's subscription limits and can fail when a limit is reached.
 - A worker that stops after claiming a request is marked failed when checked. The bridge does not replay a request with an uncertain outcome. Use `cancel REQUEST_ID` for a queued one.
-- At most eight pending requests, one active CLI call per provider, 180 seconds maximum runtime by default.
+- At most eight pending automatic requests and eight waiting manual questions, one active CLI call per provider,
+  300 seconds maximum runtime by default.
 - Worker output is logged to `data/workers.log`.
 - The providers still process submitted text on their servers; keep credentials out of questions.
+  The bridge refuses a question or context that contains a recognisable API key, token or private key.
+- If Codex answers "blocked by policy" when it tries to read a file on Windows, set `codex_windows_sandbox`
+  to `"unelevated"` in `bridge-config.json`.
+- A damaged file in `data/requests` is skipped; the other requests keep working.
+
+## Tests
+
+    python -m pytest -q tests
+    claude plugin test plugin
+
+GitHub Actions runs the Python tests on every push and pull request (`.github/workflows/tests.yml`).
