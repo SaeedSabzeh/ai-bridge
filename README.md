@@ -1,12 +1,43 @@
 # Local AI Bridge
 
-A small local bridge that lets Claude Code and ChatGPT (Codex CLI) ask each other for questions, ideas,
-second opinions and translation checks. Messages are plain JSON files under `data/requests` in the bridge folder.
-Each assistant answers through its own subscription CLI; no API keys are used.
-The assistant that answers can look things up before it replies, read-only: it reads files in the
-asker's project folder, and Codex can also run read-only commands (`git diff`, searches) and search the web.
-It can never edit, create or delete anything. The one exception is a picture: Claude's `generate_image`
-has ChatGPT make an image, and the bridge saves it as a new file (see below).
+Let **Claude Code** and **ChatGPT** (through the Codex CLI) work together on your computer. One assistant does
+the work and asks the other for a second opinion, a code review, ideas, a translation check or a picture,
+and the answer comes back into the same session.
+
+Each assistant answers through **its own subscription CLI**, so no API keys and no API billing are involved.
+The bridge is a single Python script with no third-party dependencies; messages are plain JSON files on disk.
+
+## What it does
+
+- **Second opinions with real context.** The assistant that answers starts in the asker's project folder and
+  can look things up before it replies: read files, run read-only commands such as `git diff`, and (Codex)
+  search the web. It can never edit, create or delete anything.
+- **Reviews before a commit.** Claude can send a diff to ChatGPT for a bug review, or hold a multi-round
+  discussion on a hard design decision. Topics keep their own provider session, with checkpoints for recovery.
+- **Pictures on the ChatGPT subscription.** Claude's `generate_image` has ChatGPT draw an image, and the
+  bridge saves it as a new file in the project. It never replaces a file.
+- **A live view of the conversation.** A Claude Code side panel and a Codex panel show the exchange as it
+  happens.
+- **Safety by default.** The peer is read-only, questions that contain an API key or token are refused,
+  a request is never silently retried, and workers cannot call the bridge recursively.
+
+## Requirements
+
+- Windows (the bridge is developed and tested there; other systems may need small changes)
+- Python 3.10 or newer
+- [Claude Code](https://code.claude.com) signed in with a Claude subscription, and the
+  [Codex CLI](https://github.com/openai/codex) signed in with a ChatGPT subscription
+
+Whatever the peer reads is processed by its provider, under your own account. Keep secrets out of
+project folders you share with it.
+
+## Status
+
+A personal project, maintained when I have time. Issues and pull requests are welcome, but replies may be slow.
+The tests run on Windows with Python 3.10 and 3.12 on every push.
+
+## Plugins
+
 The `plugin/` folder is a Claude Code plugin (`chatgpt-bridge`): a **Claude ↔ ChatGPT** side panel
 that shows the conversation live (`/chatgpt` opens it), plus the skills `ask-chatgpt`,
 `discuss-with-chatgpt` and `check-translation-with-chatgpt`. Install it in Claude Code with
@@ -119,7 +150,7 @@ Tell either assistant, **“Use peer coaching on this task. Ask the other assist
 
 1. **Lead:** Share the goal, constraints, proposed approach and checks already run. Ask for the biggest thing you may have missed. Use one bridge topic ID for the exchange.
 2. **Coach:** Pick one concrete concern. Explain why it matters and what principle the lead can reuse. Suggest a small check and predict what it will show if the concern is real. If you find no material issue, say what you reviewed.
-3. **Lead:** Run the check and report the evidence. Say whether you confirmed the concern and what you changed, ruled it out, or need more evidence. Use the same topic ID if a follow-up could resolve uncertainty, then bring any remaining open decision to Saeed.
+3. **Lead:** Run the check and report the evidence. Say whether you confirmed the concern and what you changed, ruled it out, or need more evidence. Use the same topic ID if a follow-up could resolve uncertainty, then bring any remaining open decision to the user.
 
 Either Claude or Codex can lead. The lead owns edits and verification, and the coach replies through the bridge. Both panels show the exchange.
 
@@ -167,3 +198,7 @@ A manual question nobody answers within 24 hours is closed as expired.
     claude plugin test plugin
 
 GitHub Actions runs the Python tests on every push and pull request (`.github/workflows/tests.yml`).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

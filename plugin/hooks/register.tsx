@@ -150,7 +150,7 @@ async function scan($: EngineInterface) {
     }
   }
   const busy = list.find(item => waiting(item) && !inInbox(item))
-  // Only Claude's inbox is something Saeed can act on here ("answer ChatGPT's questions").
+  // Only Claude's inbox is something the user can act on here ("answer ChatGPT's questions").
   const inbox = list.filter(item => inInbox(item) && item.to === 'claude').length
   $.ui.status(busy ? pending(busy) : inbox ? `Claude has ${inbox === 1 ? 'a question' : `${inbox} questions`} from ChatGPT waiting` : undefined)
   await update($, problem, () => '')
