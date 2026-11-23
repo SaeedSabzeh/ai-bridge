@@ -37,6 +37,10 @@ MAX_BODY = 128 * 1024
 MAX_PENDING = 8
 MAX_OUTPUT = 2 * 1024 * 1024
 WORKER_START_SECONDS = 30
+# A thorough answer can take well over five minutes; a reviewer that is still working is left to finish.
+DEFAULT_TIMEOUT = 3600
+MAX_TIMEOUT = 4 * 3600
+LOCK_RECHECK_SECONDS = 2  # How often a worker waiting for its provider checks that it is still wanted.
 MAX_WAIT = 50  # Seconds an MCP tool call may wait for a reply; clients time out near 60.
 MANUAL_EXPIRY_HOURS = 24
 ID_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -74,10 +78,15 @@ class ReviewError(BridgeError):
         self.detail = detail[:1500]
 
 
+class WaitAbandoned(Exception):
+    """A FileLock wait stopped because its give_up check said the lock is no longer needed."""
+
+
 class FileLock:
-    """Reentrant thread and process lock, using OS locks released on process exit."""
-    def __init__(self, path, timeout=10):
-        self.path, self.timeout = Path(path), timeout
+    """Reentrant thread and process lock, using OS locks released on process exit.
+    give_up, if given, is called every LOCK_RECHECK_SECONDS while waiting; True stops the wait (WaitAbandoned)."""
+    def __init__(self, path, timeout=10, give_up=None):
+        self.path, self.timeout, self.give_up = Path(path), timeout, give_up
         self.thread_lock = threading.RLock()
         self.local = threading.local()
 
@@ -93,6 +102,7 @@ class FileLock:
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
             os.lseek(fd, 0, os.SEEK_SET)
             deadline = time.monotonic() + self.timeout
+            recheck = time.monotonic() + LOCK_RECHECK_SECONDS
             while True:
                 try:
                     if os.name == "nt":
@@ -105,6 +115,10 @@ class FileLock:
                 except OSError:
                     if time.monotonic() >= deadline:
                         raise BridgeError("Another bridge operation is busy. Try again shortly.", 409)
+                    if self.give_up and time.monotonic() >= recheck:
+                        recheck = time.monotonic() + LOCK_RECHECK_SECONDS
+                        if self.give_up():
+                            raise WaitAbandoned()
                     time.sleep(.02)
             if os.fstat(fd).st_size == 0:
                 os.write(fd, b"0")
@@ -150,9 +164,26 @@ def atomic_json(path, value):
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, path)
+        replace_file(temp, path)
     finally:
         temp.unlink(missing_ok=True)
+
+
+# Windows refuses to replace a file while another process has it open, even for a moment:
+# the panel, a reconcile run or another worker reading the same request. That clears in milliseconds.
+LOCKED_FILE_ERRORS = {5, 32}  # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION
+REPLACE_ATTEMPTS = 20  # About 2 seconds in all.
+
+
+def replace_file(source, target):
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in LOCKED_FILE_ERRORS or attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(.1)
 
 
 def read_json(path):
@@ -209,7 +240,7 @@ def init(base=BASE):
     (base / "data" / "requests").mkdir(parents=True, exist_ok=True)
     config = base / "bridge-config.json"
     if not config.exists():
-        atomic_json(config, {"timeout_seconds": 300, "claude_path": None, "codex_path": None,
+        atomic_json(config, {"timeout_seconds": DEFAULT_TIMEOUT, "claude_path": None, "codex_path": None,
                              "peer_tools": True, "web_search": True, "codex_model": "gpt-6.2-astra", "codex_effort": "high",
                              "claude_model": None, "claude_effort": None})
     return read_json(config)
@@ -219,8 +250,8 @@ def config_for(base):
     config = init(base)
     if not isinstance(config, dict):
         raise BridgeError("bridge-config.json must contain a JSON object.")
-    if type(config.get("timeout_seconds")) is not int or not 10 <= config["timeout_seconds"] <= 1800:
-        raise BridgeError("bridge-config.json: timeout_seconds must be between 10 and 1800.")
+    if type(config.get("timeout_seconds")) is not int or not 10 <= config["timeout_seconds"] <= MAX_TIMEOUT:
+        raise BridgeError(f"bridge-config.json: timeout_seconds must be between 10 and {MAX_TIMEOUT}.")
     for key in ("peer_tools", "web_search"):
         if type(config.get(key, True)) is not bool:
             raise BridgeError(f"bridge-config.json: {key} must be true or false.")
@@ -361,7 +392,9 @@ def run_process(command, cwd, timeout, input_text=None, env=None):
             os.killpg(process.pid, signal.SIGKILL)
         process.kill()
         process.communicate()
-        raise ReviewError("timeout", "The reviewer timed out. Check the provider before starting another request.", 504,
+        span = f"{timeout} seconds" if timeout < 120 else f"{round(timeout / 60)} minutes"
+        advice = " Raise timeout_seconds in bridge-config.json if answers need longer." if timeout < MAX_TIMEOUT else ""
+        raise ReviewError("timeout", f"The reviewer did not finish within {span} and was stopped.{advice}", 504,
                           f"CLI deadline: {timeout} seconds.")
     if len(output) + len(error) > MAX_OUTPUT:
         raise BridgeError("CLI output exceeded the size limit.", 502)
@@ -913,8 +946,24 @@ class Mailbox:
                     return
                 item["worker_lock"] = True
                 atomic_json(self.path(job_id), item)
-            with FileLock(self.base / "data" / (recipient + ".lock"), timeout=MAX_PENDING * (self.config["timeout_seconds"] + 90)):
-                self._work(job_id)
+
+            def withdrawn():
+                # Cancelled or gone: stop waiting. A file that can't be read right now still counts as wanted.
+                path = self.path(job_id)
+                try:
+                    path.stat()
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    return False
+                item = read_request(path)
+                return item is not None and item["status"] != "queued"
+            try:
+                with FileLock(self.base / "data" / (recipient + ".lock"),
+                              timeout=MAX_PENDING * (self.config["timeout_seconds"] + 90), give_up=withdrawn):
+                    self._work(job_id)
+            except WaitAbandoned:
+                return
 
     def _work(self, job_id):
         with self.lock:

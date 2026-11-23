@@ -185,7 +185,7 @@ Either Claude or Codex can lead. The lead owns edits and verification, and the c
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `timeout_seconds` | 300 | Longest one answer may take (10 to 1800). Raise it if reviews of large changes time out. |
+| `timeout_seconds` | 3600 | Longest one answer may take, in seconds (10 to 14400). A reviewer that is still working is left to finish until then. |
 | `peer_tools` | true | Let the peer read files and look things up, read-only. |
 | `web_search` | true | Let Codex search the web. |
 | `codex_model` | `"gpt-6.2-astra"` | Model Codex answers with. `null` uses the Codex CLI's default. |
@@ -194,6 +194,8 @@ Either Claude or Codex can lead. The lead owns edits and verification, and the c
 | `claude_effort` | null | Claude reasoning effort, e.g. `"high"`. `null` uses the default. |
 | `codex_windows_sandbox` | null | `"elevated"` or `"unelevated"`. `null` follows your own Codex setting. |
 | `claude_path`, `codex_path` | null | Where a CLI is, if it is not found automatically. |
+
+Installations made before the one-hour default keep the `timeout_seconds` they saved (often 300). Raise it in `bridge-config.json` to give long answers time to finish.
 
 The bridge does not load your personal Codex or Claude settings for these answers, so a model you chose
 there is not used unless you also set it here.
@@ -209,7 +211,7 @@ A manual question nobody answers within 24 hours is closed as expired.
 - Calls count against each provider's subscription limits and can fail when a limit is reached.
 - A worker that stops after claiming a request is marked failed when checked. The bridge does not replay a request with an uncertain outcome. Use `cancel REQUEST_ID` for a queued one.
 - At most eight pending automatic requests and eight waiting manual questions, one active CLI call per provider,
-  300 seconds maximum runtime by default.
+  one hour maximum runtime per answer by default (`timeout_seconds`).
 - Worker output is logged to `data/workers.log`.
 - The providers still process submitted text on their servers; keep credentials out of questions.
   The bridge refuses a question or context that contains a recognisable API key, token or private key.
