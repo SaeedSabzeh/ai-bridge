@@ -677,6 +677,78 @@ bridge.Mailbox(base, bridge.config_for(base), runner=bridge.cli_reply, external_
             with self.assertRaises(b.BridgeError):
                 b.config_for(self.base)
 
+    def test_a_working_reviewer_gets_an_hour_by_default_and_up_to_four(self):
+        self.assertEqual(self.config['timeout_seconds'], 3600)
+        path = self.base / 'bridge-config.json'
+        b.atomic_json(path, {**self.config, 'timeout_seconds': 4 * 3600})
+        self.assertEqual(b.config_for(self.base)['timeout_seconds'], 4 * 3600)
+        b.atomic_json(path, {**self.config, 'timeout_seconds': 4 * 3600 + 1})
+        with self.assertRaises(b.BridgeError):
+            b.config_for(self.base)
+
+    def test_timeout_says_the_reviewer_was_still_working(self):
+        with self.assertRaises(b.ReviewError) as caught:
+            b.run_process([sys.executable, '-c', 'import time; time.sleep(30)'], self.base, 1)
+        self.assertEqual(caught.exception.code, 'timeout')
+        self.assertIn('did not finish within 1 seconds', str(caught.exception))
+        self.assertIn('timeout_seconds', str(caught.exception))
+
+    def test_cancelled_request_stops_waiting_for_its_provider(self):
+        job = 'c' * 32
+        stamp = b.now()
+        path = self.base / 'data/requests' / (job + '.json')
+        b.atomic_json(path, dict(id=job, sender='chatgpt', recipient='claude', question='Wait', context='', mode='auto',
+                                 task_id=job, status='queued', created_at=stamp, updated_at=stamp, answer=None, error=None))
+        done = threading.Event()
+        worker = threading.Thread(target=lambda: (self.mailbox.work(job), done.set()))
+        # Another request holds the provider, so this one waits in line.
+        with patch.object(b, 'LOCK_RECHECK_SECONDS', .05), b.FileLock(self.base / 'data/claude.lock'):
+            worker.start()
+            # Cancel only once the worker has claimed the request and is waiting for the provider.
+            for _ in range(500):
+                if b.read_json(path).get('worker_lock'):
+                    break
+                time.sleep(.01)
+            self.assertTrue(b.read_json(path).get('worker_lock'))
+            self.assertFalse(done.is_set())
+            self.assertEqual(b.api(self.base, '/api/requests/' + job + '/cancel', {})['status'], 'cancelled')
+            self.assertTrue(done.wait(5))
+        worker.join(5)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(b.read_json(path)['status'], 'cancelled')
+
+    @unittest.skipUnless(os.name == 'nt', 'Only Windows refuses to replace a file that is open elsewhere.')
+    def test_save_waits_while_the_file_is_open_elsewhere(self):
+        path = self.base / 'held.json'
+        b.atomic_json(path, {'n': 1})
+        # Python opens files without FILE_SHARE_DELETE, so this handle makes a plain os.replace fail.
+        reader = path.open('rb')
+        self.addCleanup(reader.close)
+        release = threading.Timer(.3, reader.close)
+        release.start()
+        self.addCleanup(release.join)
+        b.atomic_json(path, {'n': 2})
+        self.assertEqual(b.read_json(path), {'n': 2})
+        self.assertEqual(list(self.base.glob('held.json.*.tmp')), [])
+
+    def test_save_gives_up_on_a_lasting_lock_and_never_retries_other_errors(self):
+        path = self.base / 'held.json'
+        b.atomic_json(path, {'n': 1})
+        locked = PermissionError(13, 'Access is denied')
+        locked.winerror = 5
+        with patch.object(b.os, 'replace', side_effect=locked) as replace, patch.object(b.time, 'sleep'):
+            with self.assertRaises(PermissionError):
+                b.atomic_json(path, {'n': 2})
+        self.assertEqual(replace.call_count, b.REPLACE_ATTEMPTS)
+        # A real permission problem (no Windows lock code) fails at once.
+        with patch.object(b.os, 'replace', side_effect=PermissionError(13, 'Permission denied')) as replace, \
+                patch.object(b.time, 'sleep'):
+            with self.assertRaises(PermissionError):
+                b.atomic_json(path, {'n': 2})
+        self.assertEqual(replace.call_count, 1)
+        self.assertEqual(b.read_json(path), {'n': 1})
+        self.assertEqual(list(self.base.glob('held.json.*.tmp')), [])
+
     def test_readme_is_the_only_guide_and_setup_never_overwrites_it(self):
         readme = SCRIPT.parent / 'README.md'
         before = readme.read_bytes()
